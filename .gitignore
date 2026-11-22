@@ -1,0 +1,22 @@
+# Segredos e chaves de API (NUNCA COMMITE O .env)
+.env
+
+# Ambiente virtual
+venv/
+ENV/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Arquivos temporários de vídeo
+temp_*/
+reel_*/
+*.mp4
+*.mkv
+*.webm
+
+# Logs
+*.log
