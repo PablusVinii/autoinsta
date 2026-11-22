@@ -9,6 +9,9 @@ from telegram.ext import (
     filters,
 )
 
+import os
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import config
 from services.downloader import extract_instagram_url, download_reel, cleanup_media
 from services.summarizer import summarize_reel_video
@@ -18,6 +21,27 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    """Servidor HTTP simples para atender aos health checks de plataformas de nuvem (Render, Koyeb, etc.)."""
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(b"Bot Telegram Reels Online")
+
+    def log_message(self, format, *args):
+        # Silencia logs de requisições de ping para manter o console limpo
+        return
+
+def start_health_server():
+    port = int(os.getenv("PORT", "8080"))
+    try:
+        server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+        logger.info(f"Health check HTTP ativo na porta {port}")
+        server.serve_forever()
+    except Exception as e:
+        logger.warning(f"Nao foi possivel iniciar servidor de health check: {e}")
 
 async def check_user_allowed(update: Update) -> bool:
     """Verifica se o usuário está na lista de permissões."""
@@ -113,6 +137,7 @@ def main():
         return
 
     print("Iniciando o Bot do Telegram para Resumo de Reels...")
+    threading.Thread(target=start_health_server, daemon=True).start()
     app = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start_command))
