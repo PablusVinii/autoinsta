@@ -16,7 +16,7 @@ def clean_database_id(raw_id: str) -> str:
     return clean
 
 def parse_summary_sections(text: str) -> dict:
-    """Extrai estruturadamente as 4 seções do resumo."""
+    """Extrai estruturadamente as seções do resumo."""
     sections = {
         "title": "",
         "insights": [],
@@ -79,7 +79,7 @@ Responda APENAS com o nome da categoria exata (uma palavra ou frase curta):
         return "Geral"
 
 def get_database_schema(database_id: str, headers: dict) -> dict:
-    """Consulta o esquema do banco de dados do Notion para mapear as colunas existentes."""
+    """Consulta o esquema do banco de dados do Notion."""
     try:
         url = f"https://api.notion.com/v1/databases/{database_id}"
         res = requests.get(url, headers=headers, timeout=10)
@@ -89,15 +89,39 @@ def get_database_schema(database_id: str, headers: dict) -> dict:
         pass
     return {}
 
+def ensure_database_columns(database_id: str, headers: dict, schema: dict) -> dict:
+    """
+    Cria automaticamente as colunas 'Pontos-Chave', 'Passo a Passo' e 'Takeaway'
+    na tabela do Notion caso o usuário não as tenha criado manualmente.
+    """
+    needed = {}
+    has_insights = any("ponto" in k.lower() or "insight" in k.lower() for k in schema.keys())
+    has_steps = any("passo" in k.lower() or "dica" in k.lower() for k in schema.keys())
+    has_takeaway = any("takeaway" in k.lower() or "conclus" in k.lower() for k in schema.keys())
+
+    if not has_insights:
+        needed["Pontos-Chave"] = {"rich_text": {}}
+    if not has_steps:
+        needed["Passo a Passo"] = {"rich_text": {}}
+    if not has_takeaway:
+        needed["Takeaway"] = {"rich_text": {}}
+
+    if needed:
+        try:
+            patch_url = f"https://api.notion.com/v1/databases/{database_id}"
+            res = requests.patch(patch_url, json={"properties": needed}, headers=headers, timeout=10)
+            if res.status_code == 200:
+                return res.json().get("properties", {})
+        except Exception as e:
+            print(f"[Notion] Aviso ao criar colunas automáticas: {e}")
+
+    return schema
+
 def save_to_notion(title: str, category: str, platform: str, url: str, summary_text: str, transcription_text: str = "") -> tuple[bool, str]:
     """
-    Salva uma página ricamente estruturada no Notion contendo:
-    - Título e metadados nas propriedades (colunas)
-    - Título principal
-    - Pontos-chave & Insights em bullet points
-    - Passo a passo numerado
-    - Takeaway em bloco de citação
-    - Transcrição completa sanfonada (toggle)
+    Salva uma página no Notion:
+    1. Preenche diretamente as colunas da Tabela (Nome, Categoria, Plataforma, URL, Pontos-Chave, Passo a Passo, Takeaway).
+    2. Insere todo o conteúdo diagramado dentro da página (visível ao clicar em 'Abrir').
     """
     notion_key = os.getenv("NOTION_API_KEY", "").strip()
     raw_database_id = os.getenv("NOTION_DATABASE_ID", "").strip()
@@ -115,12 +139,13 @@ def save_to_notion(title: str, category: str, platform: str, url: str, summary_t
         "Content-Type": "application/json",
     }
 
-    # Extrai cada seção do resumo
     parsed = parse_summary_sections(summary_text)
     final_title = (parsed["title"] or title or "Resumo de Vídeo")[:100]
 
-    # Identifica colunas existentes na tabela do usuário
+    # Garante que a tabela tenha as colunas para exibir direto na planilha
     schema = get_database_schema(database_id, headers)
+    schema = ensure_database_columns(database_id, headers, schema)
+
     properties = {}
 
     title_prop_name = None
@@ -134,7 +159,11 @@ def save_to_notion(title: str, category: str, platform: str, url: str, summary_t
         "title": [{"text": {"content": final_title}}]
     }
 
-    # Preenche colunas opcionais adicionais se o usuário tiver criado na tabela
+    insights_str = "\n".join([f"• {x}" for x in parsed["insights"]]) if parsed["insights"] else ""
+    steps_str = "\n".join([f"{i}. {x}" for i, x in enumerate(parsed["steps"], 1)]) if parsed["steps"] else ""
+    takeaway_str = parsed["takeaway"] or ""
+
+    # Preenche as propriedades (colunas) da tabela
     for name, prop in schema.items():
         p_type = prop.get("type")
         lower_name = name.lower()
@@ -147,40 +176,39 @@ def save_to_notion(title: str, category: str, platform: str, url: str, summary_t
             properties[name] = {"multi_select": [{"name": category[:50]}]}
         elif p_type == "select" and ("plat" in lower_name or "origem" in lower_name or "rede" in lower_name):
             properties[name] = {"select": {"name": platform[:50]}}
-        elif p_type == "rich_text" and ("takeaway" in lower_name or "conclus" in lower_name):
-            if parsed["takeaway"]:
-                properties[name] = {"rich_text": [{"text": {"content": parsed["takeaway"][:2000]}}]}
-        elif p_type == "rich_text" and ("resumo" in lower_name or "summary" in lower_name):
-            short_res = parsed["takeaway"] or final_title
-            properties[name] = {"rich_text": [{"text": {"content": short_res[:2000]}}]}
+        elif p_type == "rich_text" and ("ponto" in lower_name or "insight" in lower_name):
+            if insights_str:
+                properties[name] = {"rich_text": [{"text": {"content": insights_str[:2000]}}]}
+        elif p_type == "rich_text" and ("passo" in lower_name or "dica" in lower_name or "acao" in lower_name):
+            if steps_str:
+                properties[name] = {"rich_text": [{"text": {"content": steps_str[:2000]}}]}
+        elif p_type == "rich_text" and ("takeaway" in lower_name or "conclus" in lower_name or "resumo" in lower_name):
+            if takeaway_str:
+                properties[name] = {"rich_text": [{"text": {"content": takeaway_str[:2000]}}]}
 
-    # MONTA O CORPO DA PÁGINA (CHILDREN) ESTRUTURADO COM TODAS AS SEÇÕES
-    page_blocks = []
+    # MONTA O CORPO DA PÁGINA (CHILDREN)
+    page_blocks = [
+        {
+            "object": "block",
+            "type": "callout",
+            "callout": {
+                "icon": {"type": "emoji", "emoji": "🎬"},
+                "rich_text": [
+                    {"type": "text", "text": {"content": f"Vídeo no {platform}: "}},
+                    {"type": "text", "text": {"content": url, "link": {"url": url}}}
+                ]
+            }
+        },
+        {
+            "object": "block",
+            "type": "heading_1",
+            "heading_1": {
+                "rich_text": [{"type": "text", "text": {"content": final_title}}]
+            }
+        },
+        {"object": "block", "type": "divider", "divider": {}}
+    ]
 
-    # 1. Card com link original
-    page_blocks.append({
-        "object": "block",
-        "type": "callout",
-        "callout": {
-            "icon": {"type": "emoji", "emoji": "🎬"},
-            "rich_text": [
-                {"type": "text", "text": {"content": f"Vídeo no {platform}: "}},
-                {"type": "text", "text": {"content": url, "link": {"url": url}}}
-            ]
-        }
-    })
-
-    # 2. Título / Tema Principal
-    page_blocks.append({
-        "object": "block",
-        "type": "heading_1",
-        "heading_1": {
-            "rich_text": [{"type": "text", "text": {"content": final_title}}]
-        }
-    })
-    page_blocks.append({"object": "block", "type": "divider", "divider": {}})
-
-    # 3. Pontos-Chave & Insights
     if parsed["insights"]:
         page_blocks.append({
             "object": "block",
@@ -198,7 +226,6 @@ def save_to_notion(title: str, category: str, platform: str, url: str, summary_t
                 }
             })
 
-    # 4. Passo a Passo / Ações Práticas
     if parsed["steps"]:
         page_blocks.append({
             "object": "block",
@@ -216,7 +243,6 @@ def save_to_notion(title: str, category: str, platform: str, url: str, summary_t
                 }
             })
 
-    # 5. Takeaway Central
     if parsed["takeaway"]:
         page_blocks.append({
             "object": "block",
@@ -233,7 +259,6 @@ def save_to_notion(title: str, category: str, platform: str, url: str, summary_t
             }
         })
 
-    # 6. Fallback caso as tags não tenham sido encontradas (insere os parágrafos diretos)
     if not parsed["insights"] and not parsed["steps"]:
         for paragraph in summary_text.split("\n\n"):
             p_clean = paragraph.strip()
@@ -246,13 +271,12 @@ def save_to_notion(title: str, category: str, platform: str, url: str, summary_t
                     }
                 })
 
-    # 7. Transcrição completa retrátil (se disponível)
     if transcription_text and len(transcription_text) > 30:
         page_blocks.append({
             "object": "block",
             "type": "toggle",
             "toggle": {
-                "rich_text": [{"type": "text", "text": {"content": "📝 Transcrição Completa (Clique para ver)"}}],
+                "rich_text": [{"type": "text", "text": {"content": "📝 Transcrição Completa (Clique para expandir)"}}],
                 "children": [
                     {
                         "object": "block",
@@ -276,7 +300,7 @@ def save_to_notion(title: str, category: str, platform: str, url: str, summary_t
         if response.status_code in (200, 201):
             page_data = response.json()
             page_url = page_data.get("url", "https://notion.so")
-            return True, f"✅ *Página criada no seu Notion com sucesso!*\n\n🎬 *Título:* {final_title}\n🏷️ *Categoria:* `#{category}`\n🔗 [Abrir Página no Notion]({page_url})"
+            return True, f"✅ *Salvo no Notion com sucesso!*\n\n🎬 *Título:* {final_title}\n🏷️ *Categoria:* `#{category}`\n🔗 [Abrir Página no Notion]({page_url})"
         else:
             err_msg = response.text[:200]
             if "could not find database" in err_msg.lower():
