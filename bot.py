@@ -346,6 +346,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             cached.get("platform", "Vídeo"),
             cached.get("url", ""),
             cached.get("summary", ""),
+            cached.get("transcription", ""),
         )
         try:
             await feedback_msg.edit_text(msg, parse_mode=constants.ParseMode.MARKDOWN)
