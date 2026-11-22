@@ -4,10 +4,10 @@ from google import genai
 import config
 
 ANALYSIS_PROMPT = """
-Você é um assistente especialista em analisar, resumir e transcrever vídeos curtos (Instagram Reels, TikTok, YouTube Shorts, Twitter/X).
-Analise o vídeo fornecido com atenção total:
+Você é um assistente especialista em analisar, resumir e transcrever vídeos e conteúdos para redes sociais (Instagram Reels, TikTok, YouTube, Twitter/X).
+Analise o material fornecido com atenção total:
 1. Áudio e falas: tudo o que foi dito ou explicado.
-2. Elementos visuais e textos/códigos/receitas na tela: dicas, bullet points, legendas ou passos demonstrados.
+2. Se houver vídeo/imagem: textos na tela, códigos, receitas, gráficos ou passos demonstrados.
 
 Sua resposta DEVE conter estritamente as duas seções delimitadas pelas tags abaixo:
 
@@ -30,7 +30,7 @@ Sua resposta DEVE conter estritamente as duas seções delimitadas pelas tags ab
 [FIM_RESUMO]
 
 [INICIO_TRANSCRICAO]
-(Escreva a transcrição detalhada do que foi dito no vídeo em parágrafos limpos)
+(Escreva a transcrição detalhada do que foi dito no conteúdo em parágrafos limpos)
 [FIM_TRANSCRICAO]
 
 Observação: Responda em Português do Brasil com formatação compatível com Telegram (use * para negrito e • para tópicos).
@@ -38,9 +38,9 @@ Observação: Responda em Português do Brasil com formatação compatível com 
 
 def analyze_and_summarize_video(file_path: str, model_name: str = None) -> tuple[str, str]:
     """
-    Faz upload do vídeo para a Gemini API, aguarda processamento e extrai:
+    Faz upload do vídeo ou áudio para a Gemini API, aguarda processamento e extrai:
     - summary: Resumo estruturado
-    - transcription: Transcrição das falas do vídeo
+    - transcription: Transcrição das falas
     """
     model = model_name or config.GEMINI_MODEL
     client = genai.Client(api_key=config.GEMINI_API_KEY)
@@ -54,18 +54,26 @@ def analyze_and_summarize_video(file_path: str, model_name: str = None) -> tuple
             if myfile.state and myfile.state.name == "ACTIVE":
                 break
             if myfile.state and myfile.state.name == "FAILED":
-                raise RuntimeError("Falha ao processar o vídeo na API do Gemini.")
+                raise RuntimeError("Falha ao processar o arquivo na API do Gemini.")
             time.sleep(2)
             myfile = client.files.get(name=myfile.name)
             attempts += 1
+
+        # Detecta se é áudio ou vídeo
+        mime = myfile.mime_type or "video/mp4"
+        media_type = "video"
+        if mime.startswith("audio/") or file_path.lower().endswith((".m4a", ".mp3", ".wav", ".aac", ".ogg")):
+            media_type = "audio"
+            if not mime.startswith("audio/"):
+                mime = "audio/mp4"
 
         interaction = client.interactions.create(
             model=model,
             input=[
                 {
-                    "type": "video",
+                    "type": media_type,
                     "uri": myfile.uri,
-                    "mime_type": myfile.mime_type or "video/mp4"
+                    "mime_type": mime
                 },
                 {
                     "type": "text",
@@ -114,7 +122,7 @@ def generate_content_ideas(summary_text: str) -> str:
     client = genai.Client(api_key=config.GEMINI_API_KEY)
 
     prompt = f"""
-Com base no resumo deste vídeo:
+Com base no resumo deste conteúdo:
 \"\"\"
 {summary_text}
 \"\"\"
