@@ -6,6 +6,8 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-4-hydrogen").strip()
+NOTION_API_KEY = os.getenv("NOTION_API_KEY", "").strip()
+NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID", "").strip()
 
 _allowed_raw = os.getenv("ALLOWED_USER_IDS", "").strip()
 if _allowed_raw:

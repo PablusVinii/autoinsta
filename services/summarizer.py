@@ -181,3 +181,36 @@ Responda em Português do Brasil com formatação elegante para Telegram.
         input=prompt
     )
     return interaction.output_text or "Não foi possível gerar as ideias no momento."
+
+
+def answer_video_question(summary_text: str, transcription_text: str, question: str) -> str:
+    """
+    Responde a uma pergunta específica do usuário sobre o conteúdo do vídeo,
+    usando o resumo e a transcrição completa como contexto.
+    """
+    client = genai.Client(api_key=config.GEMINI_API_KEY)
+
+    prompt = f"""
+Você é o assistente que assistiu e analisou o vídeo a seguir.
+O usuário está fazendo uma pergunta específica sobre o conteúdo do vídeo.
+
+[RESUMO DO VÍDEO]
+{summary_text}
+
+[TRANSCRIÇÃO E FALAS DO VÍDEO]
+{transcription_text[:40000]}
+
+[PERGUNTA DO USUÁRIO]
+{question}
+
+Instruções:
+- Responda de forma direta, clara e precisa com base estritamente no que foi falado ou demonstrado no vídeo.
+- Se o vídeo mencionar ferramentas, nomes, passos, livros, valores ou detalhes técnicos, cite-os explicitamente.
+- Se o vídeo não mencionar a resposta, diga com honestidade que o autor não abordou esse ponto no vídeo.
+- Responda em Português do Brasil com formatação elegante para Telegram.
+"""
+    interaction = client.interactions.create(
+        model=config.GEMINI_MODEL,
+        input=prompt
+    )
+    return interaction.output_text or "Não consegui formular uma resposta para essa pergunta."
