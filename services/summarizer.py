@@ -1,15 +1,17 @@
 import time
+import re
 from google import genai
 import config
 
-SUMMARY_PROMPT = """
-Você é um assistente especialista em analisar e resumir vídeos curtos (Instagram Reels).
-Analise o vídeo fornecido com atenção total a dois elementos:
-1. Áudio e fala: o que o autor diz ou ensina.
-2. Elementos visuais e texto na tela: anotações, tópicos, códigos, legendas, nomes de ferramentas, receitas ou passos gráficos que aparecem no vídeo.
+ANALYSIS_PROMPT = """
+Você é um assistente especialista em analisar, resumir e transcrever vídeos curtos (Instagram Reels, TikTok, YouTube Shorts, Twitter/X).
+Analise o vídeo fornecido com atenção total:
+1. Áudio e falas: tudo o que foi dito ou explicado.
+2. Elementos visuais e textos/códigos/receitas na tela: dicas, bullet points, legendas ou passos demonstrados.
 
-Gere um resumo direto ao ponto, elegante e estruturado no seguinte formato:
+Sua resposta DEVE conter estritamente as duas seções delimitadas pelas tags abaixo:
 
+[INICIO_RESUMO]
 🎬 *TÍTULO / TEMA PRINCIPAL*
 (Uma frase clara resumindo o que é ensinado ou discutido)
 
@@ -25,13 +27,20 @@ Gere um resumo direto ao ponto, elegante e estruturado no seguinte formato:
 
 📌 *TAKEAWAY CENTRAL*
 (A lição ou ação mais importante para quem assistiu)
+[FIM_RESUMO]
+
+[INICIO_TRANSCRICAO]
+(Escreva a transcrição detalhada do que foi dito no vídeo em parágrafos limpos)
+[FIM_TRANSCRICAO]
 
 Observação: Responda em Português do Brasil com formatação compatível com Telegram (use * para negrito e • para tópicos).
 """
 
-def summarize_reel_video(file_path: str, model_name: str = None) -> str:
+def analyze_and_summarize_video(file_path: str, model_name: str = None) -> tuple[str, str]:
     """
-    Faz upload do vídeo para a Gemini API, aguarda processamento e gera um resumo detalhado.
+    Faz upload do vídeo para a Gemini API, aguarda processamento e extrai:
+    - summary: Resumo estruturado
+    - transcription: Transcrição das falas do vídeo
     """
     model = model_name or config.GEMINI_MODEL
     client = genai.Client(api_key=config.GEMINI_API_KEY)
@@ -39,7 +48,6 @@ def summarize_reel_video(file_path: str, model_name: str = None) -> str:
     myfile = client.files.upload(file=file_path)
 
     try:
-        # Aguarda o vídeo ficar no estado ACTIVE se necessário
         max_attempts = 30
         attempts = 0
         while attempts < max_attempts:
@@ -51,7 +59,6 @@ def summarize_reel_video(file_path: str, model_name: str = None) -> str:
             myfile = client.files.get(name=myfile.name)
             attempts += 1
 
-        # Chamada com a Interactions API (padrão oficial atual)
         interaction = client.interactions.create(
             model=model,
             input=[
@@ -62,21 +69,75 @@ def summarize_reel_video(file_path: str, model_name: str = None) -> str:
                 },
                 {
                     "type": "text",
-                    "text": SUMMARY_PROMPT
+                    "text": ANALYSIS_PROMPT
                 }
             ]
         )
 
-        output = interaction.output_text
-        if not output:
-            raise RuntimeError("O modelo Gemini não retornou nenhum texto.")
+        output = interaction.output_text or ""
 
-        return output
+        # Extrai o resumo e a transcrição via tags
+        summary = ""
+        transcription = ""
+
+        summary_match = re.search(r"\[INICIO_RESUMO\](.*?)\[FIM_RESUMO\]", output, re.DOTALL)
+        if summary_match:
+            summary = summary_match.group(1).strip()
+        else:
+            summary = output.strip()
+
+        transcription_match = re.search(r"\[INICIO_TRANSCRICAO\](.*?)\[FIM_TRANSCRICAO\]", output, re.DOTALL)
+        if transcription_match:
+            transcription = transcription_match.group(1).strip()
+        else:
+            transcription = "Transcrição não disponível separadamente."
+
+        return summary, transcription
 
     finally:
-        # Remove o arquivo temporário dos servidores do Google
         try:
             if myfile and myfile.name:
                 client.files.delete(name=myfile.name)
         except Exception as e:
             print(f"[Gemini Cleanup] Aviso ao deletar arquivo remoto: {e}")
+
+# Compatibilidade retroativa
+def summarize_reel_video(file_path: str, model_name: str = None) -> str:
+    summary, _ = analyze_and_summarize_video(file_path, model_name)
+    return summary
+
+def generate_content_ideas(summary_text: str) -> str:
+    """
+    Gera ideias de posts e ganchos para redes sociais a partir do resumo do vídeo.
+    Chamada de texto ultrarrápida.
+    """
+    client = genai.Client(api_key=config.GEMINI_API_KEY)
+
+    prompt = f"""
+Com base no resumo deste vídeo:
+\"\"\"
+{summary_text}
+\"\"\"
+
+Crie um kit prático de ideias de conteúdo para redes sociais no seguinte formato:
+
+🎣 *3 GANCHOS VIRAL (Hooks)*
+1. "[Gancho magnético 1]"
+2. "[Gancho magnético 2]"
+3. "[Gancho magnético 3]"
+
+📱 *IDEIA DE CARROSSEL / REEL*
+• *Slide 1 (Capa):* [Título chamativo]
+• *Slide 2 a 4 (Conteúdo):* [Passo a passo ou argumentos-chave]
+• *Slide Final (CTA):* [Chamada para ação de engajamento]
+
+🧵 *TWEET / THREAD (Ideia curta)*
+"[Um tweet direto, provocativo ou educativo sintetizando o valor principal]"
+
+Responda em Português do Brasil com formatação elegante para Telegram.
+"""
+    interaction = client.interactions.create(
+        model=config.GEMINI_MODEL,
+        input=prompt
+    )
+    return interaction.output_text or "Não foi possível gerar as ideias no momento."

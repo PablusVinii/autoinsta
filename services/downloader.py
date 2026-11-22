@@ -3,27 +3,39 @@ import re
 import tempfile
 import yt_dlp
 
-INSTAGRAM_URL_REGEX = re.compile(
-    r"https?://(?:www\.)?instagram\.com/(?:reel|reels|p|share/reel)/([a-zA-Z0-9_\-]+)",
-    re.IGNORECASE
-)
+# Expressões regulares para plataformas suportadas
+PATTERNS = {
+    "Instagram": re.compile(r"https?://(?:www\.)?instagram\.com/(?:reel|reels|p|share/reel)/([a-zA-Z0-9_\-]+)", re.IGNORECASE),
+    "YouTube Shorts": re.compile(r"https?://(?:www\.)?(?:youtube\.com/shorts/|youtu\.be/)([a-zA-Z0-9_\-]+)", re.IGNORECASE),
+    "TikTok": re.compile(r"https?://(?:(?:www|vm|vt)\.)?tiktok\.com/(?:@[a-zA-Z0-9_.]+/video/|v/|t/)?([a-zA-Z0-9_\-]+)", re.IGNORECASE),
+    "Twitter/X": re.compile(r"https?://(?:www\.)?(?:twitter\.com|x\.com)/[a-zA-Z0-9_]+/status/([0-9]+)", re.IGNORECASE),
+}
 
-def extract_instagram_url(text: str) -> str | None:
-    """Extrai a URL do Instagram Reels ou Post do texto da mensagem."""
+def extract_video_url(text: str) -> tuple[str, str] | None:
+    """
+    Identifica se a mensagem contém um link de vídeo suportado.
+    Retorna tupla (url_original, plataforma) ou None.
+    """
     if not text:
         return None
-    match = INSTAGRAM_URL_REGEX.search(text)
-    if match:
-        # Retorna a URL base limpa
-        code = match.group(1)
-        return f"https://www.instagram.com/reel/{code}/"
+
+    for platform, pattern in PATTERNS.items():
+        match = pattern.search(text)
+        if match:
+            raw_url = match.group(0)
+            return raw_url, platform
+
     return None
 
-def download_reel(url: str) -> str:
+# Compatibilidade retroativa
+extract_instagram_url = lambda text: (extract_video_url(text) or (None, None))[0]
+
+def download_video(url: str) -> str:
     """
-    Baixa o vídeo do Reels usando yt-dlp e retorna o caminho do arquivo temporário.
+    Baixa o vídeo de qualquer plataforma suportada (Instagram, TikTok, YouTube Shorts, X)
+    usando yt-dlp e retorna o caminho do arquivo temporário.
     """
-    temp_dir = tempfile.mkdtemp(prefix="reel_")
+    temp_dir = tempfile.mkdtemp(prefix="video_")
     out_template = os.path.join(temp_dir, "%(id)s.%(ext)s")
 
     ydl_opts = {
@@ -33,12 +45,11 @@ def download_reel(url: str) -> str:
         "no_warnings": True,
         "noplaylist": True,
         "nocheckcertificate": True,
-        # Headers genéricos para evitar restrições simples
         "http_headers": {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/122.0.0.0 Safari/537.36"
+                "Chrome/124.0.0.0 Safari/537.36"
             ),
         },
     }
@@ -47,20 +58,21 @@ def download_reel(url: str) -> str:
         info = ydl.extract_info(url, download=True)
         filename = ydl.prepare_filename(info)
 
-        # Se yt-dlp salvou com outra extensão comum
         if not os.path.exists(filename):
             base, _ = os.path.splitext(filename)
             for ext in [".mp4", ".mkv", ".webm", ".mov"]:
                 candidate = base + ext
                 if os.path.exists(candidate):
                     return candidate
-            # Busca qualquer arquivo criado no diretório
             files = os.listdir(temp_dir)
             if files:
                 return os.path.join(temp_dir, files[0])
             raise FileNotFoundError("Não foi possível localizar o arquivo baixado.")
 
         return filename
+
+# Alias de compatibilidade
+download_reel = download_video
 
 def cleanup_media(file_path: str):
     """Remove o arquivo de mídia temporário e o diretório associado se vazio."""
