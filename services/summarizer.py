@@ -7,7 +7,7 @@ ANALYSIS_PROMPT = """
 Você é um assistente especialista em analisar, resumir e transcrever vídeos e conteúdos para redes sociais (Instagram Reels, TikTok, YouTube, Twitter/X).
 Analise o material fornecido com atenção total:
 1. Áudio e falas: tudo o que foi dito ou explicado.
-2. Se houver vídeo/imagem: textos na tela, códigos, receitas, gráficos ou passos demonstrados.
+2. Elementos visuais/gráficos/textos demonstrados na tela.
 
 Sua resposta DEVE conter estritamente as duas seções delimitadas pelas tags abaixo:
 
@@ -21,7 +21,7 @@ Sua resposta DEVE conter estritamente as duas seções delimitadas pelas tags ab
 • [Ponto 3]
 
 🛠 *PASSO A PASSO / DICAS PRÁTICAS*
-(Se for um tutorial, receita, dica técnica ou guia prático, liste as etapas numeradas. Se for apenas reflexão ou opinião, destaque os principais argumentos)
+(Se for um tutorial, receita, dica técnica ou debate, liste as etapas ou argumentos principais numerados)
 1. [Passo ou argumento 1]
 2. [Passo ou argumento 2]
 
@@ -30,58 +30,56 @@ Sua resposta DEVE conter estritamente as duas seções delimitadas pelas tags ab
 [FIM_RESUMO]
 
 [INICIO_TRANSCRICAO]
-(Escreva a transcrição detalhada do que foi dito no conteúdo em parágrafos limpos)
+(Escreva uma transcrição organizada dos principais pontos e diálogos do conteúdo em parágrafos limpos)
 [FIM_TRANSCRICAO]
 
 Observação: Responda em Português do Brasil com formatação compatível com Telegram (use * para negrito e • para tópicos).
 """
 
-def summarize_text_transcript(transcript_text: str, model_name: str = None) -> str:
+def analyze_youtube_url_direct(youtube_url: str, model_name: str = None) -> tuple[str, str]:
     """
-    Gera o resumo estruturado diretamente a partir do texto da transcrição.
-    Muito mais rápido e sem necessidade de transferir arquivos de mídia.
+    Analisa um vídeo do YouTube passando a URL diretamente para a API do Gemini.
+    Totalmente imune a bloqueios de data center e checagem de bot, pois roda nos servidores do Google.
     """
     model = model_name or config.GEMINI_MODEL
     client = genai.Client(api_key=config.GEMINI_API_KEY)
 
-    prompt = f"""
-Você é um assistente especialista em analisar e resumir vídeos do YouTube e redes sociais a partir da sua transcrição.
-Analise o texto abaixo com atenção aos conceitos, ensinamentos, dados, passos práticos e conclusões:
-
-\"\"\"
-{transcript_text[:50000]}
-\"\"\"
-
-Gere um resumo estruturado no seguinte formato exato:
-
-🎬 *TÍTULO / TEMA PRINCIPAL*
-(Uma frase clara resumindo o tema central do vídeo)
-
-💡 *PONTOS-CHAVE & INSIGHTS*
-• [Ponto 1]
-• [Ponto 2]
-• [Ponto 3]
-
-🛠 *PASSO A PASSO / PRINCIPAIS ARGUMENTOS*
-1. [Passo ou argumento 1]
-2. [Passo ou argumento 2]
-
-📌 *TAKEAWAY CENTRAL*
-(A lição ou ação principal para quem assistiu)
-
-Responda em Português do Brasil com formatação elegante para Telegram (use * para negrito e • para tópicos).
-"""
     interaction = client.interactions.create(
         model=model,
-        input=prompt
+        input=[
+            {
+                "type": "video",
+                "uri": youtube_url
+            },
+            {
+                "type": "text",
+                "text": ANALYSIS_PROMPT
+            }
+        ]
     )
-    return interaction.output_text or "Resumo não disponível."
+
+    output = interaction.output_text or ""
+
+    summary = ""
+    transcription = ""
+
+    summary_match = re.search(r"\[INICIO_RESUMO\](.*?)\[FIM_RESUMO\]", output, re.DOTALL)
+    if summary_match:
+        summary = summary_match.group(1).strip()
+    else:
+        summary = output.strip()
+
+    transcription_match = re.search(r"\[INICIO_TRANSCRICAO\](.*?)\[FIM_TRANSCRICAO\]", output, re.DOTALL)
+    if transcription_match:
+        transcription = transcription_match.group(1).strip()
+    else:
+        transcription = "Transcrição gerada pelo modelo Gemini a partir do YouTube."
+
+    return summary, transcription
 
 def analyze_and_summarize_video(file_path: str, model_name: str = None) -> tuple[str, str]:
     """
-    Faz upload do vídeo ou áudio para a Gemini API, aguarda processamento e extrai:
-    - summary: Resumo estruturado
-    - transcription: Transcrição das falas
+    Faz upload do arquivo local (Instagram, TikTok, Twitter) para a Gemini API e analisa.
     """
     model = model_name or config.GEMINI_MODEL
     client = genai.Client(api_key=config.GEMINI_API_KEY)
@@ -100,7 +98,6 @@ def analyze_and_summarize_video(file_path: str, model_name: str = None) -> tuple
             myfile = client.files.get(name=myfile.name)
             attempts += 1
 
-        # Detecta se é áudio ou vídeo
         mime = myfile.mime_type or "video/mp4"
         media_type = "video"
         if mime.startswith("audio/") or file_path.lower().endswith((".m4a", ".mp3", ".wav", ".aac", ".ogg")):
@@ -148,10 +145,6 @@ def analyze_and_summarize_video(file_path: str, model_name: str = None) -> tuple
                 client.files.delete(name=myfile.name)
         except Exception as e:
             print(f"[Gemini Cleanup] Aviso ao deletar arquivo remoto: {e}")
-
-def summarize_reel_video(file_path: str, model_name: str = None) -> str:
-    summary, _ = analyze_and_summarize_video(file_path, model_name)
-    return summary
 
 def generate_content_ideas(summary_text: str) -> str:
     """

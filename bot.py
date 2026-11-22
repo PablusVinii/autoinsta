@@ -24,13 +24,12 @@ import config
 from services.downloader import (
     extract_video_url,
     get_youtube_video_id,
-    get_youtube_transcript,
     download_video,
     cleanup_media,
 )
 from services.summarizer import (
+    analyze_youtube_url_direct,
     analyze_and_summarize_video,
-    summarize_text_transcript,
     generate_content_ideas,
 )
 
@@ -40,8 +39,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Cache em memória para guardar transcrição e resumo dos vídeos recentes (para os botões interativos)
-# Estrutura: {cache_id: {"summary": str, "transcription": str, "url": str, "platform": str, "time": float}}
 VIDEO_CACHE = {}
 
 def clean_expired_cache():
@@ -86,13 +83,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = (
         "🤖 *Olá! Eu sou o seu Assistente Universal de Resumos.*\n\n"
-        "Agora eu suporto as principais plataformas de vídeo curto:\n"
-        "• 📸 *Instagram:* Reels e posts em vídeo\n"
+        "Suporto as principais redes de vídeo:\n"
+        "• 📸 *Instagram:* Reels e vídeos do feed\n"
+        "• ▶️ *YouTube:* Shorts e vídeos completos\n"
         "• 🎵 *TikTok:* Vídeos e links compartilhados\n"
-        "• ▶️ *YouTube:* Shorts e vídeos curtos\n"
-        "• 🐦 *Twitter / X:* Vídeos de postagens\n\n"
-        "Basta compartilhar o vídeo direto para este chat ou colar o link aqui!\n"
-        "Você receberá o resumo completo com opções interativas para ver a transcrição ou transformar o vídeo em ideias de posts."
+        "• 🐦 *Twitter / X:* Posts com vídeo\n\n"
+        "Basta compartilhar o vídeo direto para este chat ou colar o link aqui!"
     )
     await update.message.reply_text(text, parse_mode=constants.ParseMode.MARKDOWN)
 
@@ -110,7 +106,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not extracted:
         await update.message.reply_text(
-            "💡 Envie um link válido de vídeo do *Instagram*, *TikTok*, *YouTube Shorts* ou *Twitter/X* para eu resumir!",
+            "💡 Envie um link válido de vídeo do *Instagram*, *TikTok*, *YouTube* ou *Twitter/X* para eu resumir!",
             parse_mode=constants.ParseMode.MARKDOWN,
         )
         return
@@ -119,39 +115,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     clean_expired_cache()
 
     status_msg = await update.message.reply_text(
-        f"⏳ *Vídeo do {platform} detectado!*\nBaixando mídia e gerando inteligência com IA...",
+        f"⏳ *Vídeo do {platform} detectado!*\nProcessando conteúdo e gerando resumo com IA...",
         parse_mode=constants.ParseMode.MARKDOWN,
     )
 
     local_path = None
-    summary = None
-    transcription = None
-
     try:
         await context.bot.send_chat_action(
             chat_id=update.effective_chat.id,
             action=constants.ChatAction.TYPING,
         )
 
-        # Se for YouTube, tenta obter a transcrição oficial primeiro (imune a checagens de bot e instantâneo)
+        summary = None
+        transcription = None
+
+        # Para YouTube, usa a integração nativa direta do Gemini (zero download, zero bloqueio de IP de bot)
         if platform == "YouTube":
             yt_id = get_youtube_video_id(video_url)
-            if yt_id:
-                transcript_text = await asyncio.to_thread(get_youtube_transcript, yt_id)
-                if transcript_text:
-                    logger.info(f"Transcrição do YouTube obtida para {yt_id} ({len(transcript_text)} caracteres)")
-                    summary = await asyncio.to_thread(summarize_text_transcript, transcript_text)
-                    transcription = transcript_text
+            clean_yt_url = f"https://www.youtube.com/watch?v={yt_id}" if yt_id else video_url
+            logger.info(f"Processando YouTube diretamente via Gemini: {clean_yt_url}")
+            summary, transcription = await asyncio.to_thread(analyze_youtube_url_direct, clean_yt_url)
 
-        # Caso não seja YouTube ou o vídeo não tenha legendas/transcrição disponíveis
+        # Para Instagram, TikTok e Twitter/X, baixa e envia para a IA
         if not summary:
-            # 1. Download da mídia (áudio/vídeo)
             local_path = await asyncio.to_thread(download_video, video_url)
-
-            # 2. Resumo e Transcrição com Gemini multimodal
             summary, transcription = await asyncio.to_thread(analyze_and_summarize_video, local_path)
 
-        # 3. Guarda no cache para botões interativos
+        # Guarda no cache para botões interativos
         cache_id = str(uuid.uuid4())[:8]
         VIDEO_CACHE[cache_id] = {
             "summary": summary,
@@ -161,7 +151,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "time": time.time(),
         }
 
-        # 4. Cria teclado com botões interativos
+        # Cria teclado com botões interativos
         keyboard = [
             [
                 InlineKeyboardButton("📝 Ver Transcrição", callback_data=f"tx_{cache_id}"),
@@ -170,7 +160,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        # 5. Monta mensagem final
+        # Monta mensagem final
         response_text = f"{summary}\n\n🔗 [{platform} Original]({video_url})"
 
         try:
@@ -216,7 +206,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         transcription = cached.get("transcription", "Transcrição não disponível.")
         text = f"📝 *TRANSCRIÇÃO COMPLETA:*\n\n{transcription}"
 
-        # Se for muito longa, corta respeitando o limite do Telegram de 4096 caracteres
         if len(text) > 4000:
             text = text[:3950] + "\n\n... *(Transcrição truncada por limite do Telegram)*"
 
