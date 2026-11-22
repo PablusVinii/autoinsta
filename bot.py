@@ -21,8 +21,18 @@ from telegram.ext import (
 )
 
 import config
-from services.downloader import extract_video_url, download_video, cleanup_media
-from services.summarizer import analyze_and_summarize_video, generate_content_ideas
+from services.downloader import (
+    extract_video_url,
+    get_youtube_video_id,
+    get_youtube_transcript,
+    download_video,
+    cleanup_media,
+)
+from services.summarizer import (
+    analyze_and_summarize_video,
+    summarize_text_transcript,
+    generate_content_ideas,
+)
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -114,17 +124,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     local_path = None
+    summary = None
+    transcription = None
+
     try:
         await context.bot.send_chat_action(
             chat_id=update.effective_chat.id,
             action=constants.ChatAction.TYPING,
         )
 
-        # 1. Download do vídeo
-        local_path = await asyncio.to_thread(download_video, video_url)
+        # Se for YouTube, tenta obter a transcrição oficial primeiro (imune a checagens de bot e instantâneo)
+        if platform == "YouTube":
+            yt_id = get_youtube_video_id(video_url)
+            if yt_id:
+                transcript_text = await asyncio.to_thread(get_youtube_transcript, yt_id)
+                if transcript_text:
+                    logger.info(f"Transcrição do YouTube obtida para {yt_id} ({len(transcript_text)} caracteres)")
+                    summary = await asyncio.to_thread(summarize_text_transcript, transcript_text)
+                    transcription = transcript_text
 
-        # 2. Resumo e Transcrição com Gemini (áudio + visual)
-        summary, transcription = await asyncio.to_thread(analyze_and_summarize_video, local_path)
+        # Caso não seja YouTube ou o vídeo não tenha legendas/transcrição disponíveis
+        if not summary:
+            # 1. Download da mídia (áudio/vídeo)
+            local_path = await asyncio.to_thread(download_video, video_url)
+
+            # 2. Resumo e Transcrição com Gemini multimodal
+            summary, transcription = await asyncio.to_thread(analyze_and_summarize_video, local_path)
 
         # 3. Guarda no cache para botões interativos
         cache_id = str(uuid.uuid4())[:8]

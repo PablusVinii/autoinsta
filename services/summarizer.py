@@ -36,6 +36,47 @@ Sua resposta DEVE conter estritamente as duas seções delimitadas pelas tags ab
 Observação: Responda em Português do Brasil com formatação compatível com Telegram (use * para negrito e • para tópicos).
 """
 
+def summarize_text_transcript(transcript_text: str, model_name: str = None) -> str:
+    """
+    Gera o resumo estruturado diretamente a partir do texto da transcrição.
+    Muito mais rápido e sem necessidade de transferir arquivos de mídia.
+    """
+    model = model_name or config.GEMINI_MODEL
+    client = genai.Client(api_key=config.GEMINI_API_KEY)
+
+    prompt = f"""
+Você é um assistente especialista em analisar e resumir vídeos do YouTube e redes sociais a partir da sua transcrição.
+Analise o texto abaixo com atenção aos conceitos, ensinamentos, dados, passos práticos e conclusões:
+
+\"\"\"
+{transcript_text[:50000]}
+\"\"\"
+
+Gere um resumo estruturado no seguinte formato exato:
+
+🎬 *TÍTULO / TEMA PRINCIPAL*
+(Uma frase clara resumindo o tema central do vídeo)
+
+💡 *PONTOS-CHAVE & INSIGHTS*
+• [Ponto 1]
+• [Ponto 2]
+• [Ponto 3]
+
+🛠 *PASSO A PASSO / PRINCIPAIS ARGUMENTOS*
+1. [Passo ou argumento 1]
+2. [Passo ou argumento 2]
+
+📌 *TAKEAWAY CENTRAL*
+(A lição ou ação principal para quem assistiu)
+
+Responda em Português do Brasil com formatação elegante para Telegram (use * para negrito e • para tópicos).
+"""
+    interaction = client.interactions.create(
+        model=model,
+        input=prompt
+    )
+    return interaction.output_text or "Resumo não disponível."
+
 def analyze_and_summarize_video(file_path: str, model_name: str = None) -> tuple[str, str]:
     """
     Faz upload do vídeo ou áudio para a Gemini API, aguarda processamento e extrai:
@@ -84,7 +125,6 @@ def analyze_and_summarize_video(file_path: str, model_name: str = None) -> tuple
 
         output = interaction.output_text or ""
 
-        # Extrai o resumo e a transcrição via tags
         summary = ""
         transcription = ""
 
@@ -109,7 +149,6 @@ def analyze_and_summarize_video(file_path: str, model_name: str = None) -> tuple
         except Exception as e:
             print(f"[Gemini Cleanup] Aviso ao deletar arquivo remoto: {e}")
 
-# Compatibilidade retroativa
 def summarize_reel_video(file_path: str, model_name: str = None) -> str:
     summary, _ = analyze_and_summarize_video(file_path, model_name)
     return summary

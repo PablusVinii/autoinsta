@@ -29,6 +29,38 @@ def extract_video_url(text: str) -> tuple[str, str] | None:
 
     return None
 
+def get_youtube_video_id(url: str) -> str | None:
+    """Extrai o ID do vídeo do YouTube de qualquer formato de link."""
+    match = PATTERNS["YouTube"].search(url)
+    if match:
+        return match.group(1)
+    return None
+
+def get_youtube_transcript(video_id: str) -> str | None:
+    """
+    Obtém a transcrição oficial/automática do YouTube sem baixar vídeo nem áudio.
+    Totalmente imune a bloqueios de data center e checagem de bots do Google.
+    """
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        yt = YouTubeTranscriptApi()
+        try:
+            transcript = yt.fetch(video_id, languages=["pt", "pt-BR", "en"])
+        except Exception:
+            transcript_list = yt.list(video_id)
+            transcripts = list(transcript_list)
+            if not transcripts:
+                return None
+            transcript = transcripts[0].fetch()
+
+        full_text = " ".join([snippet.text for snippet in transcript if hasattr(snippet, "text")])
+        if not full_text:
+            full_text = " ".join([snippet.get("text", "") for snippet in transcript if isinstance(snippet, dict)])
+        return full_text.strip() if full_text else None
+    except Exception as e:
+        print(f"[YouTube Transcript] Não foi possível obter legendas para {video_id}: {e}")
+        return None
+
 extract_instagram_url = lambda text: (extract_video_url(text) or (None, None))[0]
 
 def download_tiktok_api(url: str, temp_dir: str) -> str | None:
@@ -67,8 +99,8 @@ def download_tiktok_api(url: str, temp_dir: str) -> str | None:
 
 def download_video(url: str) -> str:
     """
-    Baixa o vídeo de qualquer plataforma suportada (Instagram, TikTok, YouTube, X)
-    usando yt-dlp e estratégias anti-bloqueio para servidores na nuvem.
+    Baixa a mídia de plataformas suportadas (Instagram, TikTok, YouTube, X)
+    usando yt-dlp e estratégias anti-bloqueio.
     """
     temp_dir = tempfile.mkdtemp(prefix="media_")
 
@@ -80,7 +112,7 @@ def download_video(url: str) -> str:
 
     is_youtube = ("youtube.com" in url) or ("youtu.be" in url)
 
-    # Para YouTube, usa formato otimizado e os clients android/ios para burlar a checagem de bot em data centers
+    # Para YouTube, usa formato otimizado e os clients android/ios para burlar checagens de bot
     if is_youtube:
         fmt = "ba[ext=m4a]/ba/b[ext=mp4]/best"
         extractor_args = {
@@ -128,7 +160,6 @@ def download_video(url: str) -> str:
 
             return filename
     except Exception as e:
-        # Fallback de última chance para TikTok caso tenha falhado anteriormente
         if "tiktok.com" in url:
             fallback_path = download_tiktok_api(url, temp_dir)
             if fallback_path:
