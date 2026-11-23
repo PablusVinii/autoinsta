@@ -35,6 +35,7 @@ from services.summarizer import (
     answer_video_question,
 )
 from services.notion import save_to_notion
+from services.obsidian import generate_obsidian_content, save_note_to_github_vault
 from services.database import save_video, get_user_videos
 
 logging.basicConfig(
@@ -311,7 +312,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 ],
                 [
                     InlineKeyboardButton("💬 Tirar Dúvida", callback_data=f"qa_{cache_id}"),
-                    InlineKeyboardButton("💾 Salvar no Notion", callback_data=f"notion_{cache_id}"),
+                    InlineKeyboardButton("💾 Notion", callback_data=f"notion_{cache_id}"),
+                    InlineKeyboardButton("📓 Obsidian", callback_data=f"obsidian_{cache_id}"),
                 ]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -416,6 +418,57 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             await feedback_msg.edit_text(msg, parse_mode=constants.ParseMode.MARKDOWN)
         except Exception:
             await feedback_msg.edit_text(msg)
+
+    # F) SALVAR NO OBSIDIAN
+    elif data.startswith("obsidian_"):
+        cache_id = data[9:]
+        cached = VIDEO_CACHE.get(cache_id)
+        if not cached:
+            await query.message.reply_text("⚠️ As informações desse vídeo expiraram do cache.")
+            return
+
+        feedback_msg = await query.message.reply_text("⏳ *Formatando nota com [[Wikilinks]] e sincronizando com o Obsidian...*")
+
+        title = cached.get("title", "Vídeo")
+        summary = cached.get("summary", "")
+        transcription = cached.get("transcription", "")
+        category = cached.get("category", "Geral")
+        platform = cached.get("platform", "Vídeo")
+        url = cached.get("url", "")
+
+        # Gera o Markdown enriquecido com [[Wikilinks]] e frontmatter
+        md_content = await asyncio.to_thread(
+            generate_obsidian_content,
+            summary,
+            transcription,
+            title,
+            category,
+            platform,
+            url,
+        )
+
+        success, msg = await asyncio.to_thread(
+            save_note_to_github_vault,
+            title,
+            md_content,
+        )
+
+        try:
+            await feedback_msg.edit_text(msg, parse_mode=constants.ParseMode.MARKDOWN)
+        except Exception:
+            await feedback_msg.edit_text(msg)
+
+        # Se ainda não configurou o token do GitHub, envia também o arquivo .md no chat como contingência
+        if not success and "Token do GitHub" in msg:
+            import io
+            clean_t = title.replace("/", "_")[:35]
+            file_stream = io.BytesIO(md_content.encode("utf-8"))
+            file_stream.name = f"{clean_t}.md"
+            await query.message.reply_document(
+                document=file_stream,
+                caption="📄 *Aqui está o seu arquivo .md pronto com [[Wikilinks]]!* Basta soltá-lo no seu cofre do Obsidian.",
+                parse_mode=constants.ParseMode.MARKDOWN,
+            )
 
 def main():
     try:
