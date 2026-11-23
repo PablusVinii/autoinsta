@@ -16,7 +16,7 @@ def clean_database_id(raw_id: str) -> str:
     return clean
 
 def parse_summary_sections(text: str) -> dict:
-    """Extrai estruturadamente as seções do resumo."""
+    """Extrai estruturadamente as seções do resumo para qualquer lente."""
     sections = {
         "title": "",
         "insights": [],
@@ -28,16 +28,17 @@ def parse_summary_sections(text: str) -> dict:
         l = line.strip()
         if not l:
             continue
-        if "TÍTULO" in l or "TEMA PRINCIPAL" in l:
+        upper = l.upper()
+        if any(k in upper for k in ["TÍTULO", "TEMA", "TESE", "FERRAMENTA", "MENSAGEM CENTRAL", "PRINCÍPIO"]):
             current_sec = "title"
             continue
-        elif "PONTOS-CHAVE" in l or "INSIGHTS" in l:
+        elif any(k in upper for k in ["PONTOS-CHAVE", "INSIGHTS", "FRAMEWORKS", "STACK", "PRINCÍPIOS", "REFLEXÕES"]):
             current_sec = "insights"
             continue
-        elif "PASSO A PASSO" in l or "DICAS PRÁTICAS" in l or "ARGUMENTOS" in l:
+        elif any(k in upper for k in ["PASSO A PASSO", "PLANO DE EXECUÇÃO", "O QUE FOI CONSTRUÍDO", "APLICAÇÃO PRÁTICA", "DICAS PRÁTICAS", "ARGUMENTOS"]):
             current_sec = "steps"
             continue
-        elif "TAKEAWAY" in l or "CONCLUSÃO" in l:
+        elif any(k in upper for k in ["TAKEAWAY", "CONCLUSÃO", "ALERTA", "INSIGHT TÉCNICO", "FRASE / CITAÇÃO", "ENSINAMENTO-CHAVE", "VERSÍCULO"]):
             current_sec = "takeaway"
             continue
 

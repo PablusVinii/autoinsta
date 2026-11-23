@@ -3,13 +3,172 @@ import re
 from google import genai
 import config
 
-ANALYSIS_PROMPT = """
-Você é um assistente especialista em analisar, resumir e transcrever vídeos e conteúdos para redes sociais (Instagram Reels, TikTok, YouTube, Twitter/X).
-Analise o material fornecido com atenção total:
-1. Áudio e falas: tudo o que foi dito ou explicado.
-2. Elementos visuais/gráficos/textos demonstrados na tela.
+LENS_METADATA = {
+    "biz": {
+        "name": "Negócios & Vendas",
+        "emoji": "💼",
+    },
+    "tech": {
+        "name": "Tecnologia & IA",
+        "emoji": "💻",
+    },
+    "wis": {
+        "name": "Sabedoria & Filosofia",
+        "emoji": "🧠",
+    },
+    "fth": {
+        "name": "Fé & Espiritualidade",
+        "emoji": "🙏",
+    },
+    "gen": {
+        "name": "Síntese Geral",
+        "emoji": "⚡",
+    },
+}
 
-Sua resposta DEVE conter estritamente as duas seções delimitadas pelas tags abaixo:
+LANGUAGE_DIRECTIVE = """
+INSTRUÇÃO CRÍTICA DE IDIOMA E TRADUÇÃO:
+Independentemente do idioma original do vídeo (inglês, espanhol, etc.), você DEVE gerar todo o resumo e a transcrição estritamente em PORTUGUÊS DO BRASIL.
+Traduza termos e expressões idiomáticas de forma natural, fluida e elegante.
+"""
+
+PROMPTS = {
+    "biz": f"""
+Você é um consultor executivo sênior e estrategista de negócios de elite.
+Analise o vídeo fornecido com atenção total a falas, métricas, diagramas e dados apresentados.
+{LANGUAGE_DIRECTIVE}
+
+Seu objetivo é extrair inteligência pura de mercado, vendas, estratégia e monetização.
+Sua resposta DEVE conter estritamente as seções delimitadas pelas tags:
+
+[INICIO_RESUMO]
+🎬 *TESE / TEMA DE NEGÓCIO*
+(Uma frase clara explicando a grande ideia comercial, modelo de negócio ou oportunidade discutida)
+
+📊 *FRAMEWORKS, ESTRATÉGIAS & INSIGHTS*
+• [Insight ou framework estratégico 1]
+• [Insight ou framework estratégico 2]
+• [Métrica, funil ou tática citada 3]
+
+🛠 *PLANO DE EXECUÇÃO / O QUE APLICAR*
+1. [Ação prática imediata de implementação 1]
+2. [Ação prática imediata de implementação 2]
+
+⚠️ *ALERTA / ERRO A EVITAR*
+(A armadilha ou erro mais comum citado pelo autor para quem empreende nessa área)
+
+📌 *TAKEAWAY DE NEGÓCIOS*
+(A lição comercial definitiva que gera retorno)
+[FIM_RESUMO]
+
+[INICIO_TRANSCRICAO]
+(Escreva uma transcrição organizada em português do que foi falado no vídeo)
+[FIM_TRANSCRICAO]
+""",
+
+    "tech": f"""
+Você é um engenheiro de software sênior, arquiteto de soluções e especialista em Inteligência Artificial.
+Analise o vídeo fornecido com atenção total a falas, telas, códigos, comandos e ferramentas mostradas.
+{LANGUAGE_DIRECTIVE}
+
+Seu objetivo é extrair detalhes técnicos práticos, nomes exatos de ferramentas, modelos e tutoriais.
+Sua resposta DEVE conter estritamente as seções delimitadas pelas tags:
+
+[INICIO_RESUMO]
+🎬 *FERRAMENTA / TÓPICO TECNOLÓGICO*
+(Nome da ferramenta/tecnologia e qual problema ela resolve)
+
+🛠 *STACK & FERRAMENTAS CITADAS*
+• [Nome exato do software, modelo de IA ou biblioteca 1]
+• [Nome exato do software, modelo de IA ou biblioteca 2]
+
+⚙️ *O QUE FOI CONSTRUÍDO / DEMONSTRADO*
+(Explicação precisa do projeto, fluxo de automação ou funcionalidade apresentada)
+
+📋 *PASSO A PASSO TÉCNICO & PROMPTS*
+1. [Passo de instalação/configuração ou comando/prompt essencial 1]
+2. [Passo de instalação/configuração ou comando/prompt essencial 2]
+
+📌 *INSIGHT TÉCNICO / TAKEAWAY*
+(A grande sacada de produtividade ou arquitetura que vale guardar)
+[FIM_RESUMO]
+
+[INICIO_TRANSCRICAO]
+(Escreva uma transcrição organizada em português das explicações técnicas do vídeo)
+[FIM_TRANSCRICAO]
+""",
+
+    "wis": f"""
+Você é um mentor de vida, filósofo e especialista em desenvolvimento pessoal e psicologia comportamental.
+Analise o vídeo fornecido com atenção total às reflexões, quebras de crenças e ensinamentos de vida.
+{LANGUAGE_DIRECTIVE}
+
+Seu objetivo é extrair sabedoria atemporal, clareza mental e princípios de maturidade.
+Sua resposta DEVE conter estritamente as seções delimitadas pelas tags:
+
+[INICIO_RESUMO]
+🎬 *PRINCÍPIO / INSIGHT DE SABEDORIA*
+(A verdade fundamental ou modelo mental discutido no vídeo)
+
+🏛 *PONTOS-CHAVE & REFLEXÕES PROFUNDAS*
+• [Princípio ou reflexão profunda 1]
+• [Princípio ou reflexão profunda 2]
+• [Princípio ou reflexão profunda 3]
+
+🔄 *QUEBRA DE PARADIGMA (Antes vs. Depois)*
+(Como a maioria das pessoas enxerga a situação vs. a postura madura/sábia revelada)
+
+🧘 *APLICAÇÃO PRÁTICA NA VIDA*
+1. [Mudança de atitude, rotina ou postura mental 1]
+2. [Mudança de atitude, rotina ou postura mental 2]
+
+💬 *FRASE / CITAÇÃO DE IMPACTO*
+(A frase mais marcante ou marcadora dita no vídeo)
+[FIM_RESUMO]
+
+[INICIO_TRANSCRICAO]
+(Escreva uma transcrição organizada em português das falas e reflexões do vídeo)
+[FIM_TRANSCRICAO]
+""",
+
+    "fth": f"""
+Você é um conselheiro espiritual e estudioso teológico dedicado a extrair edificação e valores de fé.
+Analise o vídeo fornecido com sensibilidade espiritual, reverência e atenção à mensagem moral e bíblica.
+{LANGUAGE_DIRECTIVE}
+
+Seu objetivo é extrair a mensagem de fé, princípios devocionais e edificação espiritual.
+Sua resposta DEVE conter estritamente as seções delimitadas pelas tags:
+
+[INICIO_RESUMO]
+🎬 *MENSAGEM CENTRAL DE FÉ*
+(O tema espiritual central abordado pelo autor)
+
+📖 *PRINCÍPIOS & REFERÊNCIAS BÍBLICAS*
+• [Passagem, história bíblica ou mandamento abordado 1]
+• [Princípio espiritual ou valor cristão demonstrado 2]
+
+🕊️ *REFLEXÃO DEVOCIONAL*
+(O que essa mensagem ensina ao coração, trazendo paz, alinhamento ou renovação)
+
+🤲 *APLICAÇÃO PRÁTICA & ORAÇÃO*
+1. [Atitude ou postura de fé para praticar hoje]
+2. [Motivo de oração, gratidão ou meditação inspirada pelo vídeo]
+
+📌 *ENSINAMENTO-CHAVE PARA GUARDAR*
+(A verdade espiritual definitiva para carregar na caminhada)
+[FIM_RESUMO]
+
+[INICIO_TRANSCRICAO]
+(Escreva uma transcrição organizada em português da mensagem e oração do vídeo)
+[FIM_TRANSCRICAO]
+""",
+
+    "gen": f"""
+Você é um assistente especialista em analisar, resumir e transcrever vídeos curtos e conteúdos digitais.
+Analise o material fornecido com atenção total ao áudio, falas e textos na tela.
+{LANGUAGE_DIRECTIVE}
+
+Sua resposta DEVE conter estritamente as seções delimitadas pelas tags:
 
 [INICIO_RESUMO]
 🎬 *TÍTULO / TEMA PRINCIPAL*
@@ -21,7 +180,6 @@ Sua resposta DEVE conter estritamente as duas seções delimitadas pelas tags ab
 • [Ponto 3]
 
 🛠 *PASSO A PASSO / DICAS PRÁTICAS*
-(Se for um tutorial, receita, dica técnica ou debate, liste as etapas ou argumentos principais numerados)
 1. [Passo ou argumento 1]
 2. [Passo ou argumento 2]
 
@@ -30,19 +188,23 @@ Sua resposta DEVE conter estritamente as duas seções delimitadas pelas tags ab
 [FIM_RESUMO]
 
 [INICIO_TRANSCRICAO]
-(Escreva uma transcrição organizada dos principais pontos e diálogos do conteúdo em parágrafos limpos)
+(Escreva a transcrição em português do que foi falado no vídeo)
 [FIM_TRANSCRICAO]
-
-Observação: Responda em Português do Brasil com formatação compatível com Telegram (use * para negrito e • para tópicos).
 """
+}
 
-def analyze_youtube_url_direct(youtube_url: str, model_name: str = None) -> tuple[str, str]:
+def get_prompt_for_lens(lens_code: str) -> str:
+    """Retorna o prompt especializado para a lente escolhida."""
+    return PROMPTS.get(lens_code, PROMPTS["gen"])
+
+def analyze_youtube_url_direct(youtube_url: str, lens: str = "gen", model_name: str = None) -> tuple[str, str]:
     """
-    Analisa um vídeo do YouTube passando a URL diretamente para a API do Gemini.
-    Totalmente imune a bloqueios de data center e checagem de bot, pois roda nos servidores do Google.
+    Analisa um vídeo do YouTube passando a URL diretamente para a API do Gemini
+    com o prompt ajustado para a lente selecionada.
     """
     model = model_name or config.GEMINI_MODEL
     client = genai.Client(api_key=config.GEMINI_API_KEY)
+    prompt = get_prompt_for_lens(lens)
 
     interaction = client.interactions.create(
         model=model,
@@ -53,7 +215,7 @@ def analyze_youtube_url_direct(youtube_url: str, model_name: str = None) -> tupl
             },
             {
                 "type": "text",
-                "text": ANALYSIS_PROMPT
+                "text": prompt
             }
         ]
     )
@@ -77,12 +239,14 @@ def analyze_youtube_url_direct(youtube_url: str, model_name: str = None) -> tupl
 
     return summary, transcription
 
-def analyze_and_summarize_video(file_path: str, model_name: str = None) -> tuple[str, str]:
+def analyze_and_summarize_video(file_path: str, lens: str = "gen", model_name: str = None) -> tuple[str, str]:
     """
-    Faz upload do arquivo local (Instagram, TikTok, Twitter) para a Gemini API e analisa.
+    Faz upload do arquivo local (Instagram, TikTok, Twitter) para a Gemini API e analisa
+    utilizando a lente temática selecionada.
     """
     model = model_name or config.GEMINI_MODEL
     client = genai.Client(api_key=config.GEMINI_API_KEY)
+    prompt = get_prompt_for_lens(lens)
 
     myfile = client.files.upload(file=file_path)
 
@@ -115,7 +279,7 @@ def analyze_and_summarize_video(file_path: str, model_name: str = None) -> tuple
                 },
                 {
                     "type": "text",
-                    "text": ANALYSIS_PROMPT
+                    "text": prompt
                 }
             ]
         )
@@ -147,12 +311,8 @@ def analyze_and_summarize_video(file_path: str, model_name: str = None) -> tuple
             print(f"[Gemini Cleanup] Aviso ao deletar arquivo remoto: {e}")
 
 def generate_content_ideas(summary_text: str) -> str:
-    """
-    Gera ideias de posts e ganchos para redes sociais a partir do resumo do vídeo.
-    Chamada de texto ultrarrápida.
-    """
+    """Gera ideias de posts e ganchos virais a partir do resumo."""
     client = genai.Client(api_key=config.GEMINI_API_KEY)
-
     prompt = f"""
 Com base no resumo deste conteúdo:
 \"\"\"
@@ -161,7 +321,7 @@ Com base no resumo deste conteúdo:
 
 Crie um kit prático de ideias de conteúdo para redes sociais no seguinte formato:
 
-🎣 *3 GANCHOS VIRAL (Hooks)*
+🎣 *3 GANCHOS VIRAIS (Hooks)*
 1. "[Gancho magnético 1]"
 2. "[Gancho magnético 2]"
 3. "[Gancho magnético 3]"
@@ -182,14 +342,9 @@ Responda em Português do Brasil com formatação elegante para Telegram.
     )
     return interaction.output_text or "Não foi possível gerar as ideias no momento."
 
-
 def answer_video_question(summary_text: str, transcription_text: str, question: str) -> str:
-    """
-    Responde a uma pergunta específica do usuário sobre o conteúdo do vídeo,
-    usando o resumo e a transcrição completa como contexto.
-    """
+    """Responde a perguntas específicas de Q&A do usuário com base no vídeo."""
     client = genai.Client(api_key=config.GEMINI_API_KEY)
-
     prompt = f"""
 Você é o assistente que assistiu e analisou o vídeo a seguir.
 O usuário está fazendo uma pergunta específica sobre o conteúdo do vídeo.
@@ -205,7 +360,7 @@ O usuário está fazendo uma pergunta específica sobre o conteúdo do vídeo.
 
 Instruções:
 - Responda de forma direta, clara e precisa com base estritamente no que foi falado ou demonstrado no vídeo.
-- Se o vídeo mencionar ferramentas, nomes, passos, livros, valores ou detalhes técnicos, cite-os explicitamente.
+- Se o vídeo mencionar ferramentas, nomes, passos, versículos, livros, valores ou detalhes técnicos, cite-os explicitamente.
 - Se o vídeo não mencionar a resposta, diga com honestidade que o autor não abordou esse ponto no vídeo.
 - Responda em Português do Brasil com formatação elegante para Telegram.
 """

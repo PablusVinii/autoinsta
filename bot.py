@@ -28,12 +28,13 @@ from services.downloader import (
     cleanup_media,
 )
 from services.summarizer import (
+    LENS_METADATA,
     analyze_youtube_url_direct,
     analyze_and_summarize_video,
     generate_content_ideas,
     answer_video_question,
 )
-from services.notion import save_to_notion, categorize_content
+from services.notion import save_to_notion
 from services.database import save_video, get_user_videos
 
 logging.basicConfig(
@@ -42,13 +43,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Cache de dados de vídeos recentes para os botões e conversação
-# {cache_id: {"summary": str, "transcription": str, "url": str, "platform": str, "time": float, "category": str, "title": str}}
+# Cache de vídeos analisados para botões e Q&A
 VIDEO_CACHE = {}
 
-# Mapeia o ID da mensagem do resumo enviada pelo bot para o respectivo cache_id
-# {message_id: cache_id}
+# Mapeia o ID da mensagem do resumo para o cache_id
 MESSAGE_CACHE_MAP = {}
+
+# Guarda links aguardando escolha de lente pelo usuário
+# {req_id: {"url": str, "platform": str, "user_id": int, "time": float}}
+PENDING_REQUESTS = {}
 
 def clean_expired_cache():
     """Remove entradas com mais de 24 horas para economizar memória."""
@@ -56,6 +59,10 @@ def clean_expired_cache():
     expired = [k for k, v in VIDEO_CACHE.items() if now - v.get("time", 0) > 86400]
     for k in expired:
         VIDEO_CACHE.pop(k, None)
+
+    expired_pending = [k for k, v in PENDING_REQUESTS.items() if now - v.get("time", 0) > 3600]
+    for k in expired_pending:
+        PENDING_REQUESTS.pop(k, None)
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
     """Servidor HTTP simples para atender aos health checks do Render/Koyeb."""
@@ -91,16 +98,20 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     text = (
-        "🤖 *Olá! Eu sou o seu Assistente de Vídeos & Segundo Cérebro.*\n\n"
-        "Suporto as principais redes de vídeo:\n"
+        "🤖 *Olá! Eu sou o seu Assistente Especializado de Vídeos & Segundo Cérebro.*\n\n"
+        "Suporto vídeos em **Português, Inglês e Espanhol** das principais redes:\n"
         "• 📸 *Instagram:* Reels e vídeos do feed\n"
         "• ▶️ *YouTube:* Shorts e vídeos completos\n"
         "• 🎵 *TikTok:* Vídeos e links compartilhados\n"
         "• 🐦 *Twitter / X:* Posts com vídeo\n\n"
-        "✨ *Super Poderes Ativos:*\n"
-        "1. *Resumo Inteligente:* Envie qualquer link de vídeo para receber o resumo e takeaways.\n"
-        "2. *Converse com o Vídeo:* Responda (dê 'Reply') a qualquer resumo fazendo uma pergunta sobre o vídeo!\n"
-        "3. *Segundo Cérebro:* Salve no Notion com 1 clique ou consulte sua biblioteca digitando /salvos."
+        "🎯 *Como Funciona (Lentes Especializadas):*\n"
+        "Basta colar ou compartilhar um link! Eu perguntarei qual tipo de extração você deseja:\n"
+        "• 💼 *Negócios & Vendas:* Estratégias, frameworks e monetização\n"
+        "• 💻 *Tecnologia & IA:* Softwares, códigos e prompts práticos\n"
+        "• 🧠 *Sabedoria & Filosofia:* Modelos mentais e quebra de paradigmas\n"
+        "• 🙏 *Fé & Espiritualidade:* Mensagens bíblicas, princípios e devocional\n"
+        "• ⚡ *Síntese Geral:* Resumo rápido e universal\n\n"
+        "💬 *Dica:* Você pode dar 'Reply' em qualquer resumo para tirar dúvidas com a IA, ou clicar em *Salvar no Notion*!"
     )
     await update.message.reply_text(text, parse_mode=constants.ParseMode.MARKDOWN)
 
@@ -139,7 +150,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text.strip()
 
     # 1. VERIFICAÇÃO DE "CONVERSE COM O VÍDEO" (Q&A):
-    # Se o usuário respondeu (reply) a uma mensagem de resumo anterior
     if update.message.reply_to_message:
         replied_msg_id = update.message.reply_to_message.message_id
         cache_id = MESSAGE_CACHE_MAP.get(replied_msg_id)
@@ -178,104 +188,40 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     video_url, platform = extracted
     clean_expired_cache()
 
-    status_msg = await update.message.reply_text(
-        f"⏳ *Vídeo do {platform} detectado!*\nProcessando conteúdo e gerando inteligência com IA...",
+    # Armazena a solicitação pendente para a escolha de lente
+    req_id = str(uuid.uuid4())[:8]
+    PENDING_REQUESTS[req_id] = {
+        "url": video_url,
+        "platform": platform,
+        "user_id": update.effective_user.id,
+        "time": time.time(),
+    }
+
+    # Apresenta o menu de lentes temáticas para extração personalizada
+    keyboard = [
+        [
+            InlineKeyboardButton("💼 Negócios & Vendas", callback_data=f"ln_biz_{req_id}"),
+            InlineKeyboardButton("💻 Tecnologia & IA", callback_data=f"ln_tech_{req_id}"),
+        ],
+        [
+            InlineKeyboardButton("🧠 Sabedoria & Filosofia", callback_data=f"ln_wis_{req_id}"),
+            InlineKeyboardButton("🙏 Fé & Espiritualidade", callback_data=f"ln_fth_{req_id}"),
+        ],
+        [
+            InlineKeyboardButton("⚡ Síntese Geral Rápida", callback_data=f"ln_gen_{req_id}"),
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text(
+        f"🎯 *Vídeo do {platform} detectado!*\n\n"
+        "Qual tipo de extração e ensinamento você deseja tirar desse conteúdo?",
         parse_mode=constants.ParseMode.MARKDOWN,
+        reply_markup=reply_markup,
     )
 
-    local_path = None
-    try:
-        await context.bot.send_chat_action(
-            chat_id=update.effective_chat.id,
-            action=constants.ChatAction.TYPING,
-        )
-
-        summary = None
-        transcription = None
-
-        # Para YouTube, usa integração nativa do Gemini (imune a bloqueios de data center)
-        if platform == "YouTube":
-            yt_id = get_youtube_video_id(video_url)
-            clean_yt_url = f"https://www.youtube.com/watch?v={yt_id}" if yt_id else video_url
-            logger.info(f"Processando YouTube via Gemini: {clean_yt_url}")
-            summary, transcription = await asyncio.to_thread(analyze_youtube_url_direct, clean_yt_url)
-
-        # Para Instagram, TikTok e Twitter/X, baixa o arquivo de mídia
-        if not summary:
-            local_path = await asyncio.to_thread(download_video, video_url)
-            summary, transcription = await asyncio.to_thread(analyze_and_summarize_video, local_path)
-
-        # Categoriza o conteúdo com IA
-        category = await asyncio.to_thread(categorize_content, summary)
-
-        # Extrai título inicial do resumo
-        title_line = "Vídeo"
-        for line in summary.split("\n"):
-            if "TÍTULO" in line or "TEMA" in line:
-                continue
-            if line.strip():
-                title_line = line.replace("*", "").strip()[:80]
-                break
-
-        # Salva na base interna permanente
-        user_id = update.effective_user.id
-        save_video(user_id, title_line, category, platform, video_url, summary)
-
-        # Guarda no cache em memória
-        cache_id = str(uuid.uuid4())[:8]
-        VIDEO_CACHE[cache_id] = {
-            "summary": summary,
-            "transcription": transcription,
-            "url": video_url,
-            "platform": platform,
-            "category": category,
-            "title": title_line,
-            "time": time.time(),
-        }
-
-        # Cria botões interativos
-        keyboard = [
-            [
-                InlineKeyboardButton("📝 Ver Transcrição", callback_data=f"tx_{cache_id}"),
-                InlineKeyboardButton("💡 Ideias de Post", callback_data=f"idea_{cache_id}"),
-            ],
-            [
-                InlineKeyboardButton("💬 Tirar Dúvida", callback_data=f"qa_{cache_id}"),
-                InlineKeyboardButton("💾 Salvar no Notion", callback_data=f"notion_{cache_id}"),
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        response_text = f"🏷️ *Categoria:* `#{category}`\n\n{summary}\n\n🔗 [{platform} Original]({video_url})"
-
-        sent_msg = None
-        try:
-            sent_msg = await status_msg.edit_text(
-                response_text,
-                parse_mode=constants.ParseMode.MARKDOWN,
-                reply_markup=reply_markup,
-            )
-        except Exception:
-            sent_msg = await status_msg.edit_text(response_text, reply_markup=reply_markup)
-
-        # Registra o message_id para suportar Q&A com "Reply"
-        if sent_msg:
-            MESSAGE_CACHE_MAP[sent_msg.message_id] = cache_id
-
-    except Exception as e:
-        logger.error(f"Erro ao processar {platform} ({video_url}): {e}", exc_info=True)
-        error_msg = (
-            f"❌ *Não foi possível processar este vídeo do {platform}.*\n\n"
-            f"• Detalhes técnicos: `{str(e)[:150]}`"
-        )
-        await status_msg.edit_text(error_msg, parse_mode=constants.ParseMode.MARKDOWN)
-
-    finally:
-        if local_path:
-            await asyncio.to_thread(cleanup_media, local_path)
-
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Lida com os cliques nos botões interativos abaixo do resumo."""
+    """Lida com cliques em botões (escolha de lente, transcrição, ideias, q&a, notion)."""
     query = update.callback_query
     if not query or not query.data:
         return
@@ -283,6 +229,122 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
     data = query.data
 
+    # A) PROCESSA ESCOLHA DE LENTE DE EXTRAÇÃO
+    if data.startswith("ln_"):
+        parts = data.split("_")
+        if len(parts) < 3:
+            return
+        lens_code = parts[1]
+        req_id = parts[2]
+
+        req = PENDING_REQUESTS.pop(req_id, None)
+        if not req:
+            await query.message.edit_text("⚠️ A solicitação deste vídeo expirou. Por favor, envie o link novamente.")
+            return
+
+        video_url = req["url"]
+        platform = req["platform"]
+        user_id = req["user_id"]
+
+        lens_meta = LENS_METADATA.get(lens_code, LENS_METADATA["gen"])
+        lens_name = lens_meta["name"]
+        lens_emoji = lens_meta["emoji"]
+
+        status_msg = await query.message.edit_text(
+            f"⏳ *Analisando sob a lente de {lens_emoji} {lens_name}...*\n"
+            "Processando conteúdo e gerando inteligência com IA...",
+            parse_mode=constants.ParseMode.MARKDOWN,
+        )
+
+        local_path = None
+        try:
+            await context.bot.send_chat_action(
+                chat_id=update.effective_chat.id,
+                action=constants.ChatAction.TYPING,
+            )
+
+            summary = None
+            transcription = None
+
+            # Para YouTube, usa integração nativa do Gemini com a lente
+            if platform == "YouTube":
+                yt_id = get_youtube_video_id(video_url)
+                clean_yt_url = f"https://www.youtube.com/watch?v={yt_id}" if yt_id else video_url
+                logger.info(f"Processando YouTube via Gemini ({lens_name}): {clean_yt_url}")
+                summary, transcription = await asyncio.to_thread(analyze_youtube_url_direct, clean_yt_url, lens_code)
+
+            # Para Instagram, TikTok e Twitter/X, baixa o arquivo de mídia
+            if not summary:
+                local_path = await asyncio.to_thread(download_video, video_url)
+                summary, transcription = await asyncio.to_thread(analyze_and_summarize_video, local_path, lens_code)
+
+            category = f"{lens_name}"
+
+            # Extrai título inicial do resumo
+            title_line = "Vídeo"
+            for line in summary.split("\n"):
+                if any(k in line.upper() for k in ["TÍTULO", "TEMA", "TESE", "FERRAMENTA", "MENSAGEM CENTRAL", "PRINCÍPIO"]):
+                    continue
+                if line.strip():
+                    title_line = line.replace("*", "").strip()[:80]
+                    break
+
+            # Salva no banco SQLite interno
+            save_video(user_id, title_line, category, platform, video_url, summary)
+
+            # Guarda no cache em memória
+            cache_id = str(uuid.uuid4())[:8]
+            VIDEO_CACHE[cache_id] = {
+                "summary": summary,
+                "transcription": transcription,
+                "url": video_url,
+                "platform": platform,
+                "category": category,
+                "title": title_line,
+                "time": time.time(),
+            }
+
+            keyboard = [
+                [
+                    InlineKeyboardButton("📝 Ver Transcrição", callback_data=f"tx_{cache_id}"),
+                    InlineKeyboardButton("💡 Ideias de Post", callback_data=f"idea_{cache_id}"),
+                ],
+                [
+                    InlineKeyboardButton("💬 Tirar Dúvida", callback_data=f"qa_{cache_id}"),
+                    InlineKeyboardButton("💾 Salvar no Notion", callback_data=f"notion_{cache_id}"),
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            response_text = f"🏷️ *Lente:* {lens_emoji} `#{category}`\n\n{summary}\n\n🔗 [{platform} Original]({video_url})"
+
+            sent_msg = None
+            try:
+                sent_msg = await status_msg.edit_text(
+                    response_text,
+                    parse_mode=constants.ParseMode.MARKDOWN,
+                    reply_markup=reply_markup,
+                )
+            except Exception:
+                sent_msg = await status_msg.edit_text(response_text, reply_markup=reply_markup)
+
+            if sent_msg:
+                MESSAGE_CACHE_MAP[sent_msg.message_id] = cache_id
+
+        except Exception as e:
+            logger.error(f"Erro ao processar {platform} ({video_url}): {e}", exc_info=True)
+            error_msg = (
+                f"❌ *Não foi possível processar este vídeo do {platform}.*\n\n"
+                f"• Detalhes técnicos: `{str(e)[:150]}`"
+            )
+            await status_msg.edit_text(error_msg, parse_mode=constants.ParseMode.MARKDOWN)
+
+        finally:
+            if local_path:
+                await asyncio.to_thread(cleanup_media, local_path)
+        return
+
+    # B) VER TRANSCRIÇÃO COMPLETA
     if data.startswith("tx_"):
         cache_id = data[3:]
         cached = VIDEO_CACHE.get(cache_id)
@@ -301,6 +363,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception:
             await query.message.reply_text(text)
 
+    # C) GERAR IDEIAS DE POST
     elif data.startswith("idea_"):
         cache_id = data[5:]
         cached = VIDEO_CACHE.get(cache_id)
@@ -319,18 +382,19 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception as e:
             await loading_msg.edit_text(f"❌ Erro ao gerar ideias: {e}")
 
+    # D) COMO TIRAR DÚVIDA (Q&A)
     elif data.startswith("qa_"):
-        cache_id = data[3:]
         await query.message.reply_text(
             "💬 *Como tirar dúvidas sobre este vídeo:*\n\n"
             "Basta clicar em **Responder (Reply)** na mensagem do resumo acima e digitar sua pergunta!\n\n"
             "Exemplos:\n"
             "• _Qual ferramenta ele mencionou?_\n"
             "• _Explique o passo 2 em mais detalhes._\n"
-            "• _Como aplico isso no meu trabalho?_",
+            "• _Como aplico isso no meu contexto?_",
             parse_mode=constants.ParseMode.MARKDOWN,
         )
 
+    # E) SALVAR NO NOTION
     elif data.startswith("notion_"):
         cache_id = data[7:]
         cached = VIDEO_CACHE.get(cache_id)
