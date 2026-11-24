@@ -59,14 +59,15 @@ ESTILO DESEJADO: {tone_desc}
 [TRECHO DA TRANSCRIÇÃO]
 {transcription[:4000]}
 
-REGRAS ESTRITAS DE FORMATAÇÃO PARA O LINKEDIN:
-1. Idioma: Português do Brasil natural, direto e sem clichês de IA ("No mundo dinâmico de hoje...", "Em conclusão...").
-2. GANCHO (Hook): As 2 primeiras linhas devem ser curtas e magnéticas para gerar clique em "Ver mais".
-3. SEM MARKDOWN: O LinkedIn NÃO renderiza `**negrito**`, `*itálico*` ou `# títulos`. NUNCA use asteriscos ou crases. Use texto puro, quebras de linha generosas e no máximo marcadores limpos como `→` ou `•`.
-4. Escaneabilidade: Parágrafos curtos (1 a 2 frases por bloco).
-5. Fechamento: Termine com uma pergunta aberta inteligente para estimular comentários + 3 a 5 hashtags relevantes no final.
-6. Tamanho ideal: Entre 700 e 1.500 caracteres (máximo absoluto de 2.500 caracteres).
-7. NÃO inclua links externos no corpo do post e NÃO coloque introduções como "Aqui está o post:". Entregue APENAS o texto final pronto para publicação.
+REGRAS ESTRITAS DE FORMATAÇÃO E AUTORIA PARA O LINKEDIN:
+1. AUTORIA ORIGINAL (REGRA CRÍTICA): Escreva como se o insight, a opinião e o domínio técnico fossem 100% seus (do autor do perfil). NUNCA mencione ou dê a entender que o texto veio de outro conteúdo — é PROIBIDO usar expressões como "no vídeo", "nesse conteúdo", "o autor disse", "segundo o resumo", "li/assisti recentemente", "na transcrição", "com base na análise" ou qualquer referência a vídeo/post/fonte externa.
+2. Idioma: Português do Brasil natural, direto e sem clichês de IA ("No mundo dinâmico de hoje...", "Em conclusão...").
+3. GANCHO (Hook): As 2 primeiras linhas devem ser curtas e magnéticas para gerar clique em "Ver mais".
+4. SEM MARKDOWN: O LinkedIn NÃO renderiza `**negrito**`, `*itálico*` ou `# títulos`. NUNCA use asteriscos ou crases. Use texto puro, quebras de linha generosas e no máximo marcadores limpos como `→` ou `•`.
+5. Escaneabilidade: Parágrafos curtos (1 a 2 frases por bloco).
+6. Fechamento: Termine com uma pergunta aberta inteligente para estimular comentários + 3 a 5 hashtags relevantes no final.
+7. Tamanho ideal: Entre 700 e 1.500 caracteres (máximo absoluto de 2.500 caracteres).
+8. NÃO inclua links externos no corpo do post e NÃO coloque introduções como "Aqui está o post:". Entregue APENAS o texto final pronto para publicação.
 """
     interaction = client.interactions.create(
         model=config.GEMINI_MODEL,
