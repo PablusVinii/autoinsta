@@ -1,0 +1,11 @@
+[
+  {
+    "slug": "arquitetura-agentes-ia-producao",
+    "title": "Por que fluxos de IA precisam de arquitetura real e não apenas prompts",
+    "excerpt": "A diferença prática entre usar modelos de linguagem como chat e construir pipelines autônomos conectados às suas ferramentas.",
+    "category": "Tecnologia & IA",
+    "date": "2026-11-24",
+    "readTime": "3 min",
+    "file": "posts/2026-11-24-arquitetura-agentes-ia-producao.md"
+  }
+]

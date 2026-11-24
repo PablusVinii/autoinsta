@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Artigo · Pablus Vinicius</title>
+  <meta name="theme-color" content="#0a0910" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+  <div class="bg-glow" aria-hidden="true"></div>
+
+  <header class="navbar">
+    <div class="container nav-inner">
+      <a href="index.html" class="brand">
+        <span class="brand-dot"></span>
+        <span>Pablus Vinicius</span>
+      </a>
+      <nav class="nav-links">
+        <a href="index.html#sobre">Sobre</a>
+        <a href="index.html#projetos">Projetos</a>
+        <a href="index.html#blog">Blog</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    <article class="article-wrap">
+      <a href="index.html#blog" class="back-link">← Voltar para todos os artigos</a>
+      <div id="post-content" class="card">
+        <p class="muted">Carregando artigo...</p>
+      </div>
+    </article>
+  </main>
+
+  <footer class="footer">
+    <div class="container footer-inner">
+      <span>© 2026 Pablus Vinicius · InfraTech Pro</span>
+      <a href="index.html" style="color: var(--muted); text-decoration: none;">Início</a>
+    </div>
+  </footer>
+
+  <script>
+    async function loadPost() {
+      const params = new URLSearchParams(window.location.search);
+      const slug = params.get('slug');
+      const target = document.getElementById('post-content');
+
+      if (!slug) {
+        target.innerHTML = '<p>Artigo não especificado.</p>';
+        return;
+      }
+
+      try {
+        const indexRes = await fetch('posts/index.json?t=' + Date.now());
+        const posts = await indexRes.json();
+        const meta = posts.find(p => p.slug === slug);
+
+        if (!meta) {
+          target.innerHTML = '<p>Artigo não encontrado.</p>';
+          return;
+        }
+
+        document.title = `${meta.title} · Pablus Vinicius`;
+        const mdRes = await fetch(meta.file + '?t=' + Date.now());
+        const mdText = await mdRes.text();
+
+        target.innerHTML = `
+          <div class="article-header">
+            <div class="blog-meta">
+              <span class="project-badge">${meta.category || 'Artigo'}</span>
+              <span class="mono date-text">${meta.date || ''} · ${meta.readTime || '3 min'}</span>
+            </div>
+            <h1>${meta.title}</h1>
+          </div>
+          <div class="article-body">${marked.parse(mdText)}</div>
+        `;
+      } catch (err) {
+        target.innerHTML = '<p>Erro ao carregar o artigo.</p>';
+      }
+    }
+    loadPost();
+  </script>
+</body>
+</html>

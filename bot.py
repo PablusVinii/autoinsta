@@ -62,6 +62,11 @@ from services.linkedin import (
     publish_linkedin_post,
     next_angle,
 )
+from services.blog import (
+    generate_blog_article,
+    publish_to_github_blog,
+    next_blog_angle,
+)
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -592,7 +597,10 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 [
                     InlineKeyboardButton("💾 Notion", callback_data=f"notion_{cache_id}"),
                     InlineKeyboardButton("📓 Obsidian", callback_data=f"obsidian_{cache_id}"),
+                ],
+                [
                     InlineKeyboardButton("💼 Post LinkedIn", callback_data=f"li_prep_{cache_id}"),
+                    InlineKeyboardButton("🌐 Post Blog", callback_data=f"blog_prep_{cache_id}"),
                 ]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -997,6 +1005,105 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             cached.pop("linkedin_draft", None)
         await query.message.edit_text("❌ Publicação no LinkedIn cancelada.")
 
+    # K) BLOG GITHUB.IO: GERAR ARTIGO / TROCAR TOM / PUBLICAR / CANCELAR
+    elif data.startswith("blog_prep_") or data.startswith("blog_regen_"):
+        is_regen = data.startswith("blog_regen_")
+        cache_id = data[len("blog_regen_"):] if is_regen else data[len("blog_prep_"):]
+        cached = VIDEO_CACHE.get(cache_id)
+        if not cached:
+            await query.message.reply_text("⚠️ As informações desse vídeo expiraram do cache.")
+            return
+
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id,
+            action=constants.ChatAction.TYPING,
+        )
+
+        angle = cached.get("blog_angle", "executivo")
+        if is_regen:
+            angle = next_blog_angle(angle)
+            status_msg = await query.message.edit_text(
+                f"🔄 *Reescrevendo artigo do Blog (tom: {angle})...*",
+                parse_mode=constants.ParseMode.MARKDOWN,
+            )
+        else:
+            status_msg = await query.message.reply_text(
+                "🌐 *Redigindo artigo autoral para o seu Blog (github.io)...*",
+                parse_mode=constants.ParseMode.MARKDOWN,
+            )
+
+        try:
+            art_title, excerpt, body = await asyncio.to_thread(
+                generate_blog_article,
+                cached.get("title", "Artigo"),
+                cached.get("summary", ""),
+                cached.get("transcription", ""),
+                cached.get("category", "Geral"),
+                angle,
+            )
+            cached["blog_draft"] = {
+                "title": art_title,
+                "excerpt": excerpt,
+                "body": body,
+                "category": cached.get("category", "Geral"),
+            }
+            cached["blog_angle"] = angle
+
+            preview_keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("🚀 Publicar no Blog", callback_data=f"blog_pub_{cache_id}"),
+                    InlineKeyboardButton("🔄 Outro Tom", callback_data=f"blog_regen_{cache_id}"),
+                ],
+                [
+                    InlineKeyboardButton("❌ Cancelar", callback_data=f"blog_cancel_{cache_id}"),
+                ],
+            ])
+
+            preview_text = (
+                f"🌐 RASCUNHO DE ARTIGO ({angle})\n"
+                f"────────────────────────\n"
+                f"Título: {art_title}\n"
+                f"Resumo: {excerpt}\n\n"
+                f"{body[:2800]}\n"
+                f"────────────────────────\n"
+                f"Deseja publicar no seu GitHub Pages?"
+            )
+            await status_msg.edit_text(preview_text, reply_markup=preview_keyboard)
+        except Exception as e:
+            logger.error(f"Erro ao gerar artigo do blog: {e}", exc_info=True)
+            await status_msg.edit_text(f"❌ Erro ao gerar artigo para o Blog: {e}")
+
+    elif data.startswith("blog_pub_"):
+        cache_id = data[len("blog_pub_"):]
+        cached = VIDEO_CACHE.get(cache_id)
+        draft = cached.get("blog_draft") if cached else None
+        if not draft:
+            await query.message.reply_text("⚠️ Rascunho expirado. Clique em '🌐 Post Blog' novamente.")
+            return
+
+        await query.message.edit_text("🚀 Publicando artigo no repositório GitHub Pages...")
+        ok, result = await asyncio.to_thread(
+            publish_to_github_blog,
+            draft["title"],
+            draft["excerpt"],
+            draft["body"],
+            draft["category"],
+        )
+        if ok:
+            await query.message.edit_text(
+                f"✅ Artigo publicado no seu Blog!\n\n🔗 {result}\n\n"
+                f"(O GitHub Pages leva cerca de 20-40 segundos para atualizar no ar.)"
+            )
+        else:
+            await query.message.edit_text(f"❌ Falha ao publicar no Blog:\n{result}")
+
+    elif data.startswith("blog_cancel_"):
+        cache_id = data[len("blog_cancel_"):]
+        cached = VIDEO_CACHE.get(cache_id)
+        if cached:
+            cached.pop("blog_draft", None)
+        await query.message.edit_text("❌ Publicação no Blog cancelada.")
+
 async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Processa mensagens de voz ou áudio gravadas diretamente no Telegram com Deepgram Nova-3."""
     if not update.message:
@@ -1065,7 +1172,10 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
             [
                 InlineKeyboardButton("💾 Notion", callback_data=f"notion_{cache_id}"),
                 InlineKeyboardButton("📓 Obsidian", callback_data=f"obsidian_{cache_id}"),
+            ],
+            [
                 InlineKeyboardButton("💼 Post LinkedIn", callback_data=f"li_prep_{cache_id}"),
+                InlineKeyboardButton("🌐 Post Blog", callback_data=f"blog_prep_{cache_id}"),
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)

@@ -12,6 +12,9 @@ NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY", "").strip()
 DEEPGRAM_KEYS = os.getenv("DEEPGRAM_KEYS", "").strip()
 LINKEDIN_ACCESS_TOKEN = os.getenv("LINKEDIN_ACCESS_TOKEN", "").strip()
 LINKEDIN_PERSON_URN = os.getenv("LINKEDIN_PERSON_URN", "").strip()
+BLOG_GITHUB_TOKEN = os.getenv("BLOG_GITHUB_TOKEN", os.getenv("GITHUB_TOKEN", os.getenv("OBSIDIAN_GITHUB_TOKEN", ""))).strip()
+BLOG_GITHUB_REPO = os.getenv("BLOG_GITHUB_REPO", "PablusVinii/PablusVinii.github.io").strip()
+BLOG_BASE_URL = os.getenv("BLOG_BASE_URL", "https://pablusvinii.github.io").strip().rstrip("/")
 
 _allowed_raw = os.getenv("ALLOWED_USER_IDS", "").strip()
 if _allowed_raw:
