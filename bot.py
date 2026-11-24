@@ -10,6 +10,7 @@ from telegram import (
     constants,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    BotCommand,
 )
 from telegram.ext import (
     ApplicationBuilder,
@@ -683,6 +684,21 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 parse_mode=constants.ParseMode.MARKDOWN,
             )
 
+async def setup_commands(application):
+    """Configura o menu oficial de comandos e as sugestões automáticas ao digitar '/' no Telegram."""
+    commands = [
+        BotCommand("start", "Ver instruções e lentes de extração"),
+        BotCommand("obsidian", "Notas recentes e conexões [[Wikilinks]]"),
+        BotCommand("buscar", "Pesquisar assuntos e ferramentas no cofre"),
+        BotCommand("consultar", "Perguntar à IA cruzando seu Segundo Cérebro"),
+        BotCommand("salvos", "Biblioteca de vídeos processados"),
+    ]
+    try:
+        await application.bot.set_my_commands(commands)
+        logger.info("Menu de comandos registrado com sucesso no Telegram!")
+    except Exception as e:
+        logger.warning(f"Aviso ao registrar comandos no Telegram: {e}")
+
 def main():
     try:
         config.validate_config()
@@ -692,7 +708,7 @@ def main():
 
     print("Iniciando o Bot Universal de Resumos...")
     threading.Thread(target=start_health_server, daemon=True).start()
-    app = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()
+    app = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).post_init(setup_commands).build()
 
     # Comandos principais
     app.add_handler(CommandHandler("start", start_command))
