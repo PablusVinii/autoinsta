@@ -73,6 +73,48 @@ def format_diarized_transcript(data: dict) -> tuple[str, str]:
     diarized_text = "\n\n".join(formatted_lines)
     return plain_transcript, diarized_text if diarized_text else plain_transcript
 
+def is_non_portuguese(text: str, detected_language: str = "") -> bool:
+    """Verifica se o áudio transcrito está em inglês ou outro idioma não-português."""
+    if detected_language:
+        if not detected_language.lower().startswith("pt"):
+            return True
+        return False
+
+    lower = text.lower()
+    english_words = [" the ", " and ", " you ", " that ", " this ", " with ", " for ", " are ", " have ", " from ", " what ", " why ", " business ", " people "]
+    matches = sum(1 for w in english_words if w in lower)
+    return matches >= 2
+
+def translate_to_portuguese(text: str) -> str:
+    """
+    Traduz a transcrição para o Português do Brasil mantendo as marcações de locutores intactas.
+    """
+    if not text or not text.strip():
+        return ""
+
+    prompt = (
+        "Você é um tradutor executivo sênior especializado em Português do Brasil (pt-BR).\n"
+        "Traduza o diálogo e a transcrição abaixo com vocabulário natural, fluído e idiomático para o Português do Brasil.\n\n"
+        "REGRAS OBRIGATÓRIAS:\n"
+        "1. MANTENHA RIGOROSAMENTE todas as marcações de locutores exatamente como estão (exemplo: '🗣️ **Locutor 1:**', '🗣️ **Locutor 2:**').\n"
+        "2. NÃO resuma, NÃO pule nenhuma fala e NÃO adicione comentários próprios.\n"
+        "3. Se o texto já estiver integralmente em português, retorne-o exatamente como está.\n\n"
+        f"Texto original:\n{text}"
+    )
+    try:
+        from google import genai
+        import config
+        client = genai.Client(api_key=config.GEMINI_API_KEY)
+        res = client.interactions.create(
+            model=config.GEMINI_MODEL,
+            input=prompt
+        )
+        translated = res.output_text.strip()
+        return translated if translated else text
+    except Exception as e:
+        logger.error(f"[Transcriber Translator] Erro ao traduzir: {e}")
+        return text
+
 def transcribe_with_deepgram(file_path: str) -> tuple[str, str]:
     """
     Transcreve um arquivo de áudio ou vídeo usando Deepgram Nova-3 com Diarização.
@@ -138,7 +180,15 @@ def transcribe_with_deepgram(file_path: str) -> tuple[str, str]:
 
             if res.status_code == 200:
                 data = res.json()
+                detected_lang = data.get("results", {}).get("channels", [{}])[0].get("detected_language", "")
                 plain, diarized = format_diarized_transcript(data)
+
+                # Se o áudio original estiver em inglês ou outro idioma, traduz para pt-BR preservando os locutores
+                if is_non_portuguese(diarized, detected_lang):
+                    logger.info(f"[Deepgram] Áudio detectado em '{detected_lang or 'idioma estrangeiro'}'. Traduzindo transcrição para pt-BR...")
+                    diarized = translate_to_portuguese(diarized)
+                    plain = translate_to_portuguese(plain)
+
                 logger.info(f"[Deepgram Nova-3] Transcrição concluída com sucesso ({len(plain)} caracteres).")
                 return plain, diarized
 
