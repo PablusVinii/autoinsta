@@ -1,0 +1,148 @@
+import logging
+import re
+import requests
+from google import genai
+import config
+
+logger = logging.getLogger(__name__)
+
+ANGLES = {
+    "executivo": (
+        "Tom executivo e estratégico (estilo fundador/líder de tecnologia). "
+        "Foque na tese de negócio, impacto prático e aprendizado aplicável."
+    ),
+    "tecnico": (
+        "Tom de engenheiro/arquiteto prático. "
+        "Destaque ferramentas, fluxo técnico, arquitetura e ganho real de eficiência."
+    ),
+    "provocativo": (
+        "Tom contraintuitivo e provocativo. "
+        "Comece desafiando um senso comum do mercado e traga a visão revelada no conteúdo."
+    ),
+}
+
+ANGLE_ORDER = ["executivo", "tecnico", "provocativo"]
+
+
+def next_angle(current: str) -> str:
+    """Retorna o próximo tom da lista de rotação."""
+    try:
+        idx = ANGLE_ORDER.index(current)
+        return ANGLE_ORDER[(idx + 1) % len(ANGLE_ORDER)]
+    except ValueError:
+        return ANGLE_ORDER[0]
+
+
+def generate_linkedin_post(
+    title: str,
+    summary: str,
+    transcription: str = "",
+    angle: str = "executivo",
+) -> str:
+    """
+    Transforma o resumo/transcrição analisado em um post otimizado para o LinkedIn
+    (sem Markdown cru, com gancho forte, escaneabilidade e hashtags).
+    """
+    client = genai.Client(api_key=config.GEMINI_API_KEY)
+    tone_desc = ANGLES.get(angle, ANGLES["executivo"])
+
+    prompt = f"""
+Você é um ghostwriter especialista em LinkedIn de alta retenção no Brasil.
+Sua tarefa é transformar a análise de vídeo abaixo em um post pronto para publicar no LinkedIn.
+
+TÍTULO / TEMA: {title}
+ESTILO DESEJADO: {tone_desc}
+
+[RESUMO ANALISADO]
+{summary}
+
+[TRECHO DA TRANSCRIÇÃO]
+{transcription[:4000]}
+
+REGRAS ESTRITAS DE FORMATAÇÃO PARA O LINKEDIN:
+1. Idioma: Português do Brasil natural, direto e sem clichês de IA ("No mundo dinâmico de hoje...", "Em conclusão...").
+2. GANCHO (Hook): As 2 primeiras linhas devem ser curtas e magnéticas para gerar clique em "Ver mais".
+3. SEM MARKDOWN: O LinkedIn NÃO renderiza `**negrito**`, `*itálico*` ou `# títulos`. NUNCA use asteriscos ou crases. Use texto puro, quebras de linha generosas e no máximo marcadores limpos como `→` ou `•`.
+4. Escaneabilidade: Parágrafos curtos (1 a 2 frases por bloco).
+5. Fechamento: Termine com uma pergunta aberta inteligente para estimular comentários + 3 a 5 hashtags relevantes no final.
+6. Tamanho ideal: Entre 700 e 1.500 caracteres (máximo absoluto de 2.500 caracteres).
+7. NÃO inclua links externos no corpo do post e NÃO coloque introduções como "Aqui está o post:". Entregue APENAS o texto final pronto para publicação.
+"""
+    interaction = client.interactions.create(
+        model=config.GEMINI_MODEL,
+        input=prompt,
+    )
+    post_text = (interaction.output_text or "").strip()
+    # Garantia extra: remove eventuais asteriscos ou crases residuais de Markdown
+    post_text = re.sub(r"\*\*(.*?)\*\*", r"\1", post_text)
+    post_text = post_text.replace("`", "")
+    return post_text
+
+
+def _resolve_person_urn(token: str) -> str:
+    """Obtém o Person URN via OpenID userinfo caso não esteja configurado."""
+    if config.LINKEDIN_PERSON_URN:
+        return config.LINKEDIN_PERSON_URN
+
+    res = requests.get(
+        "https://api.linkedin.com/v2/userinfo",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=15,
+    )
+    if res.status_code == 200:
+        sub = res.json().get("sub", "").strip()
+        if sub:
+            return f"urn:li:person:{sub}"
+    return ""
+
+
+def publish_linkedin_post(text: str) -> tuple[bool, str]:
+    """
+    Publica um post de texto no perfil pessoal do LinkedIn via API oficial.
+    Retorna (sucesso, url_ou_mensagem_erro).
+    """
+    token = config.LINKEDIN_ACCESS_TOKEN
+    if not token:
+        return False, "LINKEDIN_ACCESS_TOKEN não configurado no ambiente."
+
+    person_urn = _resolve_person_urn(token)
+    if not person_urn:
+        return False, "Não foi possível identificar o LinkedIn Person URN. Verifique o token e o escopo openid/profile."
+
+    payload = {
+        "author": person_urn,
+        "lifecycleState": "PUBLISHED",
+        "specificContent": {
+            "com.linkedin.ugc.ShareContent": {
+                "shareCommentary": {"text": text[:3000]},
+                "shareMediaCategory": "NONE",
+            }
+        },
+        "visibility": {"com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"},
+    }
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "X-Restli-Protocol-Version": "2.0.0",
+    }
+
+    try:
+        res = requests.post(
+            "https://api.linkedin.com/v2/ugcPosts",
+            headers=headers,
+            json=payload,
+            timeout=20,
+        )
+        if res.status_code in (200, 201):
+            post_id = res.headers.get("x-restli-id") or res.json().get("id", "")
+            post_url = f"https://www.linkedin.com/feed/update/{post_id}/" if post_id else "https://www.linkedin.com/feed/"
+            return True, post_url
+        elif res.status_code == 401:
+            return False, "Token do LinkedIn expirado ou inválido (401). Gere um novo token no OAuth Tools e atualize o ambiente."
+        else:
+            logger.error(f"[LinkedIn] Erro {res.status_code}: {res.text[:300]}")
+            return False, f"Erro da API do LinkedIn ({res.status_code}): {res.text[:200]}"
+    except Exception as e:
+        logger.error(f"[LinkedIn] Erro de conexão: {e}")
+        return False, f"Erro de conexão ao publicar no LinkedIn: {e}"

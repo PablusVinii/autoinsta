@@ -57,6 +57,11 @@ from services.nvidia import (
     generate_audio_summary,
     semantic_search,
 )
+from services.linkedin import (
+    generate_linkedin_post,
+    publish_linkedin_post,
+    next_angle,
+)
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -587,6 +592,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 [
                     InlineKeyboardButton("💾 Notion", callback_data=f"notion_{cache_id}"),
                     InlineKeyboardButton("📓 Obsidian", callback_data=f"obsidian_{cache_id}"),
+                    InlineKeyboardButton("💼 Post LinkedIn", callback_data=f"li_prep_{cache_id}"),
                 ]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -907,6 +913,90 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 except Exception:
                     pass
 
+    # J) LINKEDIN: GERAR RASCUNHO / TROCAR TOM / PUBLICAR / CANCELAR
+    elif data.startswith("li_prep_") or data.startswith("li_regen_"):
+        is_regen = data.startswith("li_regen_")
+        cache_id = data[len("li_regen_"):] if is_regen else data[len("li_prep_"):]
+        cached = VIDEO_CACHE.get(cache_id)
+        if not cached:
+            await query.message.reply_text("⚠️ As informações desse vídeo expiraram do cache.")
+            return
+
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id,
+            action=constants.ChatAction.TYPING,
+        )
+
+        angle = cached.get("linkedin_angle", "executivo")
+        if is_regen:
+            angle = next_angle(angle)
+            status_msg = await query.message.edit_text(
+                f"🔄 *Reescrevendo post para o LinkedIn (tom: {angle})...*",
+                parse_mode=constants.ParseMode.MARKDOWN,
+            )
+        else:
+            status_msg = await query.message.reply_text(
+                "💼 *Redigindo rascunho otimizado para o LinkedIn...*",
+                parse_mode=constants.ParseMode.MARKDOWN,
+            )
+
+        try:
+            draft = await asyncio.to_thread(
+                generate_linkedin_post,
+                cached.get("title", "Vídeo"),
+                cached.get("summary", ""),
+                cached.get("transcription", ""),
+                angle,
+            )
+            cached["linkedin_draft"] = draft
+            cached["linkedin_angle"] = angle
+
+            preview_keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("🚀 Publicar Agora", callback_data=f"li_pub_{cache_id}"),
+                    InlineKeyboardButton("🔄 Outro Tom", callback_data=f"li_regen_{cache_id}"),
+                ],
+                [
+                    InlineKeyboardButton("❌ Cancelar", callback_data=f"li_cancel_{cache_id}"),
+                ],
+            ])
+
+            preview_text = (
+                f"💼 RASCUNHO LINKEDIN (tom: {angle})\n"
+                f"────────────────────────\n\n"
+                f"{draft[:3500]}\n\n"
+                f"────────────────────────\n"
+                f"Revise o texto acima antes de publicar:"
+            )
+            await status_msg.edit_text(preview_text, reply_markup=preview_keyboard)
+        except Exception as e:
+            logger.error(f"Erro ao gerar rascunho LinkedIn: {e}", exc_info=True)
+            await status_msg.edit_text(f"❌ Erro ao gerar rascunho para o LinkedIn: {e}")
+
+    elif data.startswith("li_pub_"):
+        cache_id = data[len("li_pub_"):]
+        cached = VIDEO_CACHE.get(cache_id)
+        if not cached or not cached.get("linkedin_draft"):
+            await query.message.reply_text("⚠️ Rascunho expirado. Clique em '💼 Post LinkedIn' novamente.")
+            return
+
+        draft = cached["linkedin_draft"]
+        await query.message.edit_text("🚀 Publicando no seu perfil do LinkedIn...")
+        ok, result = await asyncio.to_thread(publish_linkedin_post, draft)
+        if ok:
+            await query.message.edit_text(
+                f"✅ Post publicado no LinkedIn com sucesso!\n\n🔗 {result}"
+            )
+        else:
+            await query.message.edit_text(f"❌ Falha ao publicar no LinkedIn:\n{result}")
+
+    elif data.startswith("li_cancel_"):
+        cache_id = data[len("li_cancel_"):]
+        cached = VIDEO_CACHE.get(cache_id)
+        if cached:
+            cached.pop("linkedin_draft", None)
+        await query.message.edit_text("❌ Publicação no LinkedIn cancelada.")
+
 async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Processa mensagens de voz ou áudio gravadas diretamente no Telegram com Deepgram Nova-3."""
     if not update.message:
@@ -975,6 +1065,7 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
             [
                 InlineKeyboardButton("💾 Notion", callback_data=f"notion_{cache_id}"),
                 InlineKeyboardButton("📓 Obsidian", callback_data=f"obsidian_{cache_id}"),
+                InlineKeyboardButton("💼 Post LinkedIn", callback_data=f"li_prep_{cache_id}"),
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)

@@ -10,6 +10,8 @@ NOTION_API_KEY = os.getenv("NOTION_API_KEY", "").strip()
 NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID", "").strip()
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY", "").strip()
 DEEPGRAM_KEYS = os.getenv("DEEPGRAM_KEYS", "").strip()
+LINKEDIN_ACCESS_TOKEN = os.getenv("LINKEDIN_ACCESS_TOKEN", "").strip()
+LINKEDIN_PERSON_URN = os.getenv("LINKEDIN_PERSON_URN", "").strip()
 
 _allowed_raw = os.getenv("ALLOWED_USER_IDS", "").strip()
 if _allowed_raw:
