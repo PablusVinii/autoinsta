@@ -6,18 +6,27 @@ import config
 
 logger = logging.getLogger(__name__)
 
+AUTHOR_PERSONA = (
+    "Você escreve na voz de Pablus Vinicius: Especialista Sênior em Infraestrutura de TI, "
+    "Suporte N3 e Engenharia de Hardware com mais de 15 anos de experiência prática "
+    "(do silício à rede: eletrônica SMD/BGA, Windows/Linux, deploy automatizado de imagens, "
+    "Wireshark, PowerShell, Bash, Python, Docker, Kubernetes e AWS). "
+    "Mentalidade pragmática orientada a causa raiz (RCA), alta disponibilidade, "
+    "redução de custos e automação operacional — nunca superficial ou genérica."
+)
+
 ANGLES = {
     "executivo": (
-        "Tom executivo e estratégico (estilo fundador/líder de tecnologia). "
-        "Foque na tese de negócio, impacto prático e aprendizado aplicável."
+        "Tom executivo e estratégico de especialista sênior em Infraestrutura e N3. "
+        "Foque em continuidade operacional, redução de custos, arquitetura e impacto real."
     ),
     "tecnico": (
-        "Tom de engenheiro/arquiteto prático. "
-        "Destaque ferramentas, fluxo técnico, arquitetura e ganho real de eficiência."
+        "Tom de engenharia e troubleshooting N3 na prática. "
+        "Destaque causa raiz, fluxo técnico, automação (PowerShell/Bash/Python), redes e hardware."
     ),
     "provocativo": (
-        "Tom contraintuitivo e provocativo. "
-        "Comece desafiando um senso comum do mercado e traga a visão revelada no conteúdo."
+        "Tom contraintuitivo e direto de quem está há 15+ anos na linha de frente. "
+        "Desafie o senso comum operacional e mostre a visão de engenharia por trás do problema."
     ),
 }
 
@@ -47,8 +56,12 @@ def generate_linkedin_post(
     tone_desc = ANGLES.get(angle, ANGLES["executivo"])
 
     prompt = f"""
-Você é um ghostwriter especialista em LinkedIn de alta retenção no Brasil.
-Sua tarefa é transformar a análise de vídeo abaixo em um post pronto para publicar no LinkedIn.
+Você é um ghostwriter escrevendo em primeira pessoa para o perfil de LinkedIn do autor abaixo.
+
+PERFIL DO AUTOR:
+{AUTHOR_PERSONA}
+
+Sua tarefa é transformar o tema e os pontos abaixo em um post autoral pronto para publicar no LinkedIn, mantendo sempre o olhar prático de quem atua em Infraestrutura Sênior, N3, Automação e Engenharia.
 
 TÍTULO / TEMA: {title}
 ESTILO DESEJADO: {tone_desc}

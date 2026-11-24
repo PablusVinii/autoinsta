@@ -10,10 +10,19 @@ import config
 
 logger = logging.getLogger(__name__)
 
+AUTHOR_PERSONA = (
+    "Você escreve na voz de Pablus Vinicius: Especialista Sênior em Infraestrutura de TI, "
+    "Suporte N3 e Engenharia de Hardware com mais de 15 anos de experiência prática "
+    "(do silício à rede: eletrônica SMD/BGA, Windows/Linux, deploy automatizado de imagens, "
+    "Wireshark, PowerShell, Bash, Python, Docker, Kubernetes e AWS). "
+    "Mentalidade pragmática orientada a causa raiz (RCA), alta disponibilidade, "
+    "recuperação de ativos críticos, redução de custos e automação operacional."
+)
+
 BLOG_ANGLES = {
-    "executivo": "Tom estratégico e executivo, focado em impacto de negócio, decisões e aplicação prática.",
-    "tecnico": "Tom de engenharia e arquitetura, aprofundando em ferramentas, mecanismos e execução técnica.",
-    "didatico": "Tom claro, estruturado e reflexivo, explicando o conceito do zero com exemplos práticos.",
+    "executivo": "Tom sênior estratégico e consultivo, focado em continuidade de negócios, redução de custos e decisões de arquitetura.",
+    "tecnico": "Tom profundo de engenharia N3 e infraestrutura, detalhando causa raiz, ferramentas, scripts (PowerShell/Bash/Python), redes e hardware.",
+    "didatico": "Tom claro, estruturado e prático de quem ensina pela experiência real de campo, conectando teoria à operação.",
 }
 
 BLOG_ANGLE_ORDER = ["executivo", "tecnico", "didatico"]
@@ -49,7 +58,12 @@ def generate_blog_article(
     tone_desc = BLOG_ANGLES.get(angle, BLOG_ANGLES["executivo"])
 
     prompt = f"""
-Você é um redator técnico e estrategista escrevendo um artigo autoral para seu próprio blog pessoal de tecnologia e negócios.
+Você é o autor do blog técnico abaixo, escrevendo em primeira pessoa para profissionais de TI, gestores e engenheiros.
+
+PERFIL DO AUTOR:
+{AUTHOR_PERSONA}
+
+Sua tarefa é escrever um artigo autoral em Markdown mantendo coerência com esse posicionamento sênior em Infraestrutura, N3, Automação e Engenharia (mesmo quando o tema envolver software ou IA, conecte com visão prática de operação, escala e confiabilidade).
 
 TEMA BASE: {title}
 CATEGORIA: {category}
