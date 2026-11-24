@@ -1,11 +1,11 @@
 [
   {
-    "slug": "arquitetura-agentes-ia-producao",
-    "title": "Por que fluxos de IA precisam de arquitetura real e não apenas prompts",
-    "excerpt": "A diferença prática entre usar modelos de linguagem como chat e construir pipelines autônomos conectados às suas ferramentas.",
-    "category": "Tecnologia & IA",
+    "slug": "troubleshooting-n3-causa-raiz",
+    "title": "O que separa o Suporte N3 Sênior de quem apenas reinicia servidores",
+    "excerpt": "Metodologia prática de análise de causa raiz (RCA), leitura de logs, gargalos de rede/disco e prevenção definitiva de incidentes críticos.",
+    "category": "Infraestrutura & N3",
     "date": "2026-11-24",
-    "readTime": "3 min",
-    "file": "posts/2026-11-24-arquitetura-agentes-ia-producao.md"
+    "readTime": "4 min",
+    "file": "posts/2026-11-24-troubleshooting-n3-causa-raiz.md"
   }
 ]
