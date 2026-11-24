@@ -119,19 +119,19 @@ def translate_to_portuguese(text: str) -> str:
         logger.error(f"[Transcriber Translator] Erro ao traduzir: {e}")
         return text
 
-def transcribe_with_deepgram(file_path: str) -> tuple[str, str]:
+def transcribe_with_deepgram(file_path: str, return_lang: bool = False):
     """
     Transcreve um arquivo de áudio ou vídeo usando Deepgram Nova-3 com Diarização.
-    Retorna (plain_text, diarized_text).
+    Retorna (plain_text, diarized_text) ou (plain_text, diarized_text, detected_lang) se return_lang=True.
     """
     if not os.path.exists(file_path):
         logger.error(f"[Deepgram] Arquivo não encontrado: {file_path}")
-        return "", ""
+        return ("", "", "") if return_lang else ("", "")
 
     keys = get_keys()
     if not keys:
         logger.warning("[Deepgram] Nenhuma chave do Deepgram configurada.")
-        return "", ""
+        return ("", "", "") if return_lang else ("", "")
 
     # Lê os bytes do arquivo de mídia
     try:
@@ -139,7 +139,7 @@ def transcribe_with_deepgram(file_path: str) -> tuple[str, str]:
             audio_bytes = f.read()
     except Exception as e:
         logger.error(f"[Deepgram] Erro ao ler arquivo de mídia: {e}")
-        return "", ""
+        return ("", "", "") if return_lang else ("", "")
 
     ext = os.path.splitext(file_path)[1].lower()
     content_type_map = {
@@ -193,8 +193,8 @@ def transcribe_with_deepgram(file_path: str) -> tuple[str, str]:
                     diarized = translate_to_portuguese(diarized)
                     plain = translate_to_portuguese(plain)
 
-                logger.info(f"[Deepgram Nova-3] Transcrição concluída com sucesso ({len(plain)} caracteres).")
-                return plain, diarized
+                logger.info(f"[Deepgram Nova-3] Transcrição concluída com sucesso ({len(plain)} caracteres, lang={detected_lang}).")
+                return (plain, diarized, detected_lang) if return_lang else (plain, diarized)
 
             # Caso ocorra erro de quota ou autorização, rotaciona a chave
             if res.status_code in (401, 402, 429):
@@ -209,7 +209,7 @@ def transcribe_with_deepgram(file_path: str) -> tuple[str, str]:
             logger.error(f"[Deepgram] Erro na requisição: {e}")
             rotate_key()
 
-    return "", ""
+    return ("", "", "") if return_lang else ("", "")
 
 DEEPGRAM_AURA_VOICES = {
     1: "aura-2-orion-en",   # Masculino conversacional, dinâmico e enérgico (Aura-2)

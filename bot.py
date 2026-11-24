@@ -35,6 +35,7 @@ from services.summarizer import (
     analyze_and_summarize_video,
     generate_content_ideas,
     answer_video_question,
+    generate_engaging_comments,
 )
 from services.notion import save_to_notion
 from services.obsidian import (
@@ -536,6 +537,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
             summary = None
             transcription = None
+            orig_lang = ""
 
             # Para YouTube, usa integração nativa do Gemini com a lente
             if platform == "YouTube":
@@ -547,7 +549,9 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             # Para Instagram, TikTok e Twitter/X, baixa o arquivo de mídia
             if not summary:
                 local_path = await asyncio.to_thread(download_video, video_url)
-                summary, transcription = await asyncio.to_thread(analyze_and_summarize_video, local_path, lens_code)
+                summary, transcription, orig_lang = await asyncio.to_thread(
+                    analyze_and_summarize_video, local_path, lens_code, None, True
+                )
 
             category = f"{lens_name}"
 
@@ -580,6 +584,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 "platform": platform,
                 "category": category,
                 "title": title_line,
+                "orig_lang": orig_lang,
                 "time": time.time(),
             }
 
@@ -591,10 +596,11 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 ],
                 [
                     InlineKeyboardButton("💡 Ideias de Post", callback_data=f"idea_{cache_id}"),
+                    InlineKeyboardButton("💭 Gerar Comentário", callback_data=f"comment_{cache_id}"),
                     InlineKeyboardButton("⚖️ Auditoria Crítica", callback_data=f"critique_{cache_id}"),
-                    InlineKeyboardButton("💬 Tirar Dúvida", callback_data=f"qa_{cache_id}"),
                 ],
                 [
+                    InlineKeyboardButton("💬 Tirar Dúvida", callback_data=f"qa_{cache_id}"),
                     InlineKeyboardButton("💾 Notion", callback_data=f"notion_{cache_id}"),
                     InlineKeyboardButton("📓 Obsidian", callback_data=f"obsidian_{cache_id}"),
                 ],
@@ -1103,6 +1109,45 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         if cached:
             cached.pop("blog_draft", None)
         await query.message.edit_text("❌ Publicação no Blog cancelada.")
+
+    # L) GERAR COMENTÁRIOS DE ENGAJAMENTO PARA A POSTAGEM ORIGINAL
+    elif data.startswith("comment_"):
+        cache_id = data[len("comment_"):]
+        cached = VIDEO_CACHE.get(cache_id)
+        if not cached:
+            await query.message.reply_text("⚠️ As informações desse vídeo expiraram do cache.")
+            return
+
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id,
+            action=constants.ChatAction.TYPING,
+        )
+
+        loading_msg = await query.message.reply_text(
+            "💭 *Criando 3 opções de comentário para engajar no post original...*",
+            parse_mode=constants.ParseMode.MARKDOWN,
+        )
+
+        try:
+            comments_text = await asyncio.to_thread(
+                generate_engaging_comments,
+                cached.get("title", "Vídeo"),
+                cached.get("summary", ""),
+                cached.get("transcription", ""),
+                cached.get("orig_lang", ""),
+            )
+            try:
+                await loading_msg.edit_text(
+                    f"💭 *Sugestões de Comentário (escolha 1 e cole lá):*\n\n{comments_text}",
+                    parse_mode=constants.ParseMode.MARKDOWN,
+                )
+            except Exception:
+                await loading_msg.edit_text(
+                    f"💭 Sugestões de Comentário (escolha 1 e cole lá):\n\n{comments_text}"
+                )
+        except Exception as e:
+            logger.error(f"Erro ao gerar comentários: {e}", exc_info=True)
+            await loading_msg.edit_text(f"❌ Erro ao gerar comentários: {e}")
 
 async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Processa mensagens de voz ou áudio gravadas diretamente no Telegram com Deepgram Nova-3."""
