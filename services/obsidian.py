@@ -154,3 +154,119 @@ def save_note_to_github_vault(title: str, content: str) -> tuple[bool, str]:
             return False, f"❌ Erro ao enviar para o GitHub (Status {put_res.status_code}): `{put_res.text[:150]}`"
     except Exception as e:
         return False, f"❌ Falha de conexão com o GitHub: `{str(e)[:150]}`"
+
+def extract_wikilinks(text: str) -> list[str]:
+    """Extrai todos os [[Wikilinks]] de um texto em Markdown sem duplicatas."""
+    if not text:
+        return []
+    links = re.findall(r'\[\[([^\]]+)\]\]', text)
+    seen = set()
+    unique_links = []
+    for l in links:
+        cleaned = l.strip()
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            unique_links.append(cleaned)
+    return unique_links
+
+def list_github_vault_notes(limit: int = 10) -> list[dict]:
+    """
+    Lista os arquivos .md presentes na pasta do cofre no repositório do GitHub.
+    Retorna lista de dicionários com nome, url no GitHub e data.
+    """
+    token = os.getenv("OBSIDIAN_GITHUB_TOKEN", "").strip()
+    repo = os.getenv("OBSIDIAN_GITHUB_REPO", "PablusVinii/meu-obsidian").strip()
+    folder = os.getenv("OBSIDIAN_VAULT_FOLDER", "Inbox").strip().strip("/")
+
+    headers = {
+        "Accept": "application/vnd.github.v3+json",
+        "User-Agent": "AutoInsta-Obsidian-Sync"
+    }
+    if token:
+        headers["Authorization"] = f"token {token}"
+
+    api_url = f"https://api.github.com/repos/{repo}/contents/{folder}" if folder else f"https://api.github.com/repos/{repo}/contents"
+
+    try:
+        res = requests.get(api_url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            items = res.json()
+            if isinstance(items, list):
+                md_files = [
+                    {
+                        "name": item.get("name", "").replace(".md", ""),
+                        "filename": item.get("name", ""),
+                        "path": item.get("path", ""),
+                        "html_url": item.get("html_url", ""),
+                        "download_url": item.get("download_url", ""),
+                    }
+                    for item in items
+                    if item.get("name", "").endswith(".md")
+                ]
+                return md_files[:limit]
+    except Exception as e:
+        print(f"[Obsidian Vault] Aviso ao listar repositório GitHub: {e}")
+    return []
+
+VAULT_SYNTHESIS_PROMPT = """
+Você é o assistente de inteligência e curador do Segundo Cérebro (PKM - Personal Knowledge Management) do usuário.
+O usuário fez uma pergunta ou pediu uma síntese consultando o conhecimento que ele acumulou no seu cofre do Obsidian através de resumos de vídeos (Instagram, TikTok, YouTube, etc).
+
+Pergunta do Usuário:
+\"{query}\"
+
+Base de Conhecimento Acumulada no Segundo Cérebro ({count} notas analisadas):
+\"\"\"
+{context}
+\"\"\"
+
+Diretrizes Obrigatórias:
+1. Responda em Português do Brasil com clareza, rigor conceitual e tom de mentor estratégico.
+2. CITE explicitamente quais notas/vídeos serviram de base para cada ensinamento (ex: "Na nota *{titulo}*...", "Conforme o vídeo sobre *{tema}*...").
+3. Use rigorosamente a sintaxe de [[Wikilinks]] do Obsidian para destacar os conceitos centrais, métodos, ferramentas e referências (ex: [[Marketing Digital]], [[MVP]], [[Engenharia de Prompt]], [[Modelos Mentais]]).
+4. Identifique e aponte conexões e padrões entre diferentes vídeos que o usuário salvou (síntese cruzada entre temas).
+5. Conclua com um takeaway prático ou passos de aplicação imediata.
+"""
+
+def synthesize_vault_knowledge(query: str, notes: list[dict]) -> str:
+    """
+    Sintetiza uma resposta consultando a base de conhecimento das notas do usuário com o Gemini.
+    """
+    if not notes:
+        return (
+            "⚠️ *Nenhuma nota encontrada no seu Segundo Cérebro ainda!*\n\n"
+            "Envie links de vídeos (Instagram, TikTok, YouTube) para o bot e clique em *Salvar no Obsidian* para começar a povoar seu cofre."
+        )
+
+    context_chunks = []
+    for i, n in enumerate(notes, 1):
+        title = n.get("title", "Nota")
+        category = n.get("category", "Geral")
+        platform = n.get("platform", "Vídeo")
+        summary = n.get("summary", "")[:700]
+        wikilinks = n.get("wikilinks", "")
+        created_at = n.get("created_at", "")
+
+        chunk = f"--- NOTA {i} ---\nTítulo: {title}\nCategoria/Lente: {category}\nPlataforma: {platform}\nData: {created_at}\n"
+        if wikilinks:
+            chunk += f"Wikilinks: {wikilinks}\n"
+        chunk += f"Conteúdo do Resumo:\n{summary}\n"
+        context_chunks.append(chunk)
+
+    full_context = "\n".join(context_chunks)
+    prompt = VAULT_SYNTHESIS_PROMPT.format(
+        query=query,
+        count=len(notes),
+        context=full_context,
+    )
+
+    try:
+        client = genai.Client(api_key=config.GEMINI_API_KEY)
+        interaction = client.interactions.create(
+            model=config.GEMINI_MODEL,
+            input=prompt
+        )
+        return interaction.output_text.strip()
+    except Exception as e:
+        print(f"[Obsidian Synthesis] Erro na síntese com Gemini: {e}")
+        return f"❌ Erro ao consultar o Segundo Cérebro: {e}"

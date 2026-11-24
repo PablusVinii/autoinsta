@@ -35,8 +35,21 @@ from services.summarizer import (
     answer_video_question,
 )
 from services.notion import save_to_notion
-from services.obsidian import generate_obsidian_content, save_note_to_github_vault
-from services.database import save_video, get_user_videos
+from services.obsidian import (
+    generate_obsidian_content,
+    save_note_to_github_vault,
+    extract_wikilinks,
+    list_github_vault_notes,
+    synthesize_vault_knowledge,
+)
+from services.database import (
+    save_video,
+    get_user_videos,
+    get_obsidian_notes,
+    update_obsidian_data,
+    search_saved_videos,
+    get_all_notes_for_synthesis,
+)
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -112,7 +125,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• 🧠 *Sabedoria & Filosofia:* Modelos mentais e quebra de paradigmas\n"
         "• 🙏 *Fé & Espiritualidade:* Mensagens bíblicas, princípios e devocional\n"
         "• ⚡ *Síntese Geral:* Resumo rápido e universal\n\n"
-        "💬 *Dica:* Você pode dar 'Reply' em qualquer resumo para tirar dúvidas com a IA, ou clicar em *Salvar no Notion*!"
+        "🧠 *Segundo Cérebro & Obsidian:*\n"
+        "• `/obsidian` — Ver notas recentes e conexões `[[Wikilinks]]`\n"
+        "• `/buscar <termo>` — Pesquisar assuntos ou ferramentas salvas\n"
+        "• `/consultar <pergunta>` — Perguntar à IA cruzando todo o seu cofre!\n"
+        "• `/salvos` — Histórico de vídeos salvos\n\n"
+        "💬 *Dica:* Você pode dar 'Reply' em qualquer resumo para tirar dúvidas com a IA, ou clicar em *Salvar no Notion* e *Salvar no Obsidian*!"
     )
     await update.message.reply_text(text, parse_mode=constants.ParseMode.MARKDOWN)
 
@@ -136,8 +154,185 @@ async def salvos_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         title = it["title"] or "Vídeo"
         lines.append(f"{i}. *{title}*\n   🏷️ `#{cat}` | 🔗 [{it['platform']}]({it['url']})\n")
 
-    lines.append("💡 *Dica:* Clique em *Salvar no Notion* em qualquer resumo para sincronizar com seu espaço de trabalho!")
+    lines.append("💡 *Dica:* Digite `/obsidian` para ver notas com `[[Wikilinks]]` ou `/buscar <termo>` para pesquisar!")
     await update.message.reply_text("\n".join(lines), parse_mode=constants.ParseMode.MARKDOWN)
+
+async def obsidian_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lista as notas recentes salvas e formatadas para o cofre do Obsidian."""
+    if not await check_user_allowed(update):
+        return
+
+    user_id = update.effective_user.id
+    notes = get_obsidian_notes(user_id, limit=6)
+    repo_name = os.getenv("OBSIDIAN_GITHUB_REPO", "PablusVinii/meu-obsidian")
+
+    if not notes:
+        await update.message.reply_text(
+            "📓 *Seu Cofre do Obsidian ainda não possui notas salvas!*\n\n"
+            "Como adicionar:\n"
+            "1. Envie qualquer link de vídeo (Instagram, TikTok, YouTube, X)\n"
+            "2. Escolha a lente de extração\n"
+            "3. Clique no botão *[ 📓 Obsidian ]*\n\n"
+            f"O bot irá gerar os `[[Wikilinks]]` e sincronizar direto com seu repositório `{repo_name}`!",
+            parse_mode=constants.ParseMode.MARKDOWN,
+        )
+        return
+
+    lines = [
+        "📓 *SEU SEGUNDO CÉREBRO NO OBSIDIAN*\n"
+        f"📂 *Repositório:* [{repo_name}](https://github.com/{repo_name})\n"
+        "Aqui estão suas notas e sínteses mais recentes:\n"
+    ]
+
+    for i, n in enumerate(notes, 1):
+        title = n["title"] or "Nota"
+        cat = n["category"] or "Geral"
+        links = n["wikilinks"] or ""
+        created = n.get("created_at", "")[:10]
+
+        entry = f"{i}. *{title}*\n   🏷️ `#{cat}` | 📅 `{created}`"
+        if links:
+            short_links = ", ".join(links.split(",")[:4])
+            entry += f"\n   🧠 *Conexões:* {short_links}"
+        if n.get("url"):
+            entry += f"\n   🔗 [{n['platform']}]({n['url']})"
+        lines.append(entry + "\n")
+
+    lines.append(
+        "💡 *Comandos Úteis:*\n"
+        "• `/buscar <termo>` — Pesquisa direta no cofre\n"
+        "• `/consultar <pergunta>` — Síntese cruzada com Gemini"
+    )
+
+    await update.message.reply_text("\n".join(lines), parse_mode=constants.ParseMode.MARKDOWN)
+
+async def buscar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Busca termos, ferramentas ou conceitos nas notas e transcrições salvas."""
+    if not await check_user_allowed(update):
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "🔍 *Como usar a Busca no Segundo Cérebro:*\n\n"
+            "Digite `/buscar <termo>` para localizar qualquer assunto em suas notas.\n\n"
+            "*Exemplos:*\n"
+            "• `/buscar inteligência artificial`\n"
+            "• `/buscar vendas`\n"
+            "• `/buscar automação`\n"
+            "• `/buscar mindset`",
+            parse_mode=constants.ParseMode.MARKDOWN,
+        )
+        return
+
+    query = " ".join(context.args).strip()
+    user_id = update.effective_user.id
+
+    results = search_saved_videos(user_id, query, limit=6)
+
+    if not results:
+        await update.message.reply_text(
+            f"🔍 *Nenhum resultado encontrado para:* \"{query}\"\n\n"
+            "• Tente palavras mais curtas ou sinônimos (ex: `vendas`, `IA`, `marketing`)\n"
+            "• Digite `/obsidian` para ver todas as notas disponíveis na sua biblioteca.",
+            parse_mode=constants.ParseMode.MARKDOWN,
+        )
+        return
+
+    lines = [f"🔎 *RESULTADOS PARA:* \"{query}\" ({len(results)} encontrados)\n"]
+    for i, r in enumerate(results, 1):
+        title = r["title"] or "Nota"
+        cat = r["category"] or "Geral"
+        links = r.get("wikilinks", "")
+        summary = r.get("summary", "")
+
+        summary_preview = ""
+        for s_line in summary.split("\n"):
+            if s_line.strip() and not s_line.startswith("#") and not any(k in s_line.upper() for k in ["TÍTULO", "TEMA", "LENTE"]):
+                summary_preview = s_line.strip()[:140]
+                break
+
+        entry = f"{i}. *{title}*\n   🏷️ `#{cat}` | 🔗 [{r['platform']}]({r['url']})"
+        if summary_preview:
+            entry += f"\n   📌 _{summary_preview}..._"
+        if links:
+            short_links = ", ".join(links.split(",")[:3])
+            entry += f"\n   🧠 {short_links}"
+        lines.append(entry + "\n")
+
+    lines.append(f"💡 *Dica:* Para cruzar essas ideias com a IA, digite:\n`/consultar {query}`")
+    await update.message.reply_text("\n".join(lines), parse_mode=constants.ParseMode.MARKDOWN)
+
+async def consultar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cruza o conhecimento acumulado no cofre do Obsidian e responde à pergunta com o Gemini."""
+    if not await check_user_allowed(update):
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "🧠 *Modo \"Consultar Segundo Cérebro\":*\n\n"
+            "Faça uma pergunta e o Gemini cruzará as lições, metodologias e conexões de todos os vídeos que você salvou!\n\n"
+            "*Exemplos:*\n"
+            "• `/consultar quais as principais estratégias de vendas que aprendi?`\n"
+            "• `/consultar como usar IA para produtividade com base nas notas?`\n"
+            "• `/consultar sintetize os princípios de sabedoria e disciplina salvos.`",
+            parse_mode=constants.ParseMode.MARKDOWN,
+        )
+        return
+
+    query = " ".join(context.args).strip()
+    user_id = update.effective_user.id
+
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id,
+        action=constants.ChatAction.TYPING,
+    )
+
+    loading = await update.message.reply_text(
+        "🧠 *Consultando seu Segundo Cérebro...*\n"
+        "Cruzando notas, transcrições e gerando síntese com IA...",
+        parse_mode=constants.ParseMode.MARKDOWN,
+    )
+
+    # 1. Busca notas direcionadas pelo termo
+    targeted_notes = search_saved_videos(user_id, query, limit=8)
+    # 2. Busca também as notas recentes para ter contexto amplo
+    recent_notes = get_all_notes_for_synthesis(user_id, limit=15)
+
+    seen_titles = set()
+    combined_notes = []
+    for n in (targeted_notes + recent_notes):
+        t = n.get("title", "")
+        if t and t not in seen_titles:
+            seen_titles.add(t)
+            combined_notes.append(n)
+
+    if not combined_notes:
+        await loading.edit_text(
+            "⚠️ *Você ainda não possui notas salvas no seu Segundo Cérebro!*\n\n"
+            "Envie links de vídeos (Instagram, TikTok, YouTube) para o bot e clique em *Salvar no Obsidian* para que eu possa cruzar seus conhecimentos."
+        )
+        return
+
+    try:
+        answer = await asyncio.to_thread(
+            synthesize_vault_knowledge,
+            query,
+            combined_notes,
+        )
+
+        if len(answer) <= 4000:
+            try:
+                await loading.edit_text(answer, parse_mode=constants.ParseMode.MARKDOWN)
+            except Exception:
+                await loading.edit_text(answer)
+        else:
+            chunks = [answer[i:i + 3900] for i in range(0, len(answer), 3900)]
+            await loading.edit_text(chunks[0], parse_mode=constants.ParseMode.MARKDOWN)
+            for ch in chunks[1:]:
+                await update.message.reply_text(ch, parse_mode=constants.ParseMode.MARKDOWN)
+    except Exception as e:
+        logger.error(f"Erro na síntese do cofre: {e}", exc_info=True)
+        await loading.edit_text(f"❌ Erro ao consultar o Segundo Cérebro: `{str(e)[:150]}`")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Processa mensagens recebidas (links de vídeos ou perguntas de Q&A sobre um resumo)."""
@@ -291,7 +486,15 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                     break
 
             # Salva no banco SQLite interno
-            save_video(user_id, title_line, category, platform, video_url, summary)
+            save_video(
+                user_id=user_id,
+                title=title_line,
+                category=category,
+                platform=platform,
+                url=video_url,
+                summary=summary,
+                transcription=transcription or "",
+            )
 
             # Guarda no cache em memória
             cache_id = str(uuid.uuid4())[:8]
@@ -447,6 +650,16 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             url,
         )
 
+        # Extrai os [[Wikilinks]] e registra no banco SQLite para buscas e conexões imediatas
+        wikilinks = extract_wikilinks(md_content)
+        wikilinks_str = ", ".join([f"[[{w}]]" for w in wikilinks])
+        update_obsidian_data(
+            user_id=update.effective_user.id,
+            url=url,
+            obsidian_content=md_content,
+            wikilinks=wikilinks_str,
+        )
+
         success, msg = await asyncio.to_thread(
             save_note_to_github_vault,
             title,
@@ -481,9 +694,21 @@ def main():
     threading.Thread(target=start_health_server, daemon=True).start()
     app = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()
 
+    # Comandos principais
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("salvos", salvos_command))
     app.add_handler(CommandHandler("biblioteca", salvos_command))
+
+    # Segundo Cérebro & Obsidian
+    app.add_handler(CommandHandler("obsidian", obsidian_command))
+    app.add_handler(CommandHandler("notas", obsidian_command))
+    app.add_handler(CommandHandler("buscar", buscar_command))
+    app.add_handler(CommandHandler("pesquisar", buscar_command))
+    app.add_handler(CommandHandler("consultar", consultar_command))
+    app.add_handler(CommandHandler("cerebro", consultar_command))
+    app.add_handler(CommandHandler("perguntar", consultar_command))
+
+    # Mensagens de texto e callbacks
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback_query))
 
