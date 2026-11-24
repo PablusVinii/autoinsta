@@ -821,10 +821,35 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 transcription,
             )
             resp = f"⚖️ *AUDITORIA CRÍTICA & VIABILIDADE (NVIDIA)*\n🎯 *Vídeo:* _{title}_\n\n{critique}"
-            try:
-                await loading_msg.edit_text(resp, parse_mode=constants.ParseMode.MARKDOWN)
-            except Exception:
-                await loading_msg.edit_text(resp)
+
+            if len(resp) <= 4000:
+                try:
+                    await loading_msg.edit_text(resp, parse_mode=constants.ParseMode.MARKDOWN)
+                except Exception:
+                    await loading_msg.edit_text(resp)
+            else:
+                chunks = []
+                current_chunk = ""
+                for line in resp.split("\n"):
+                    if len(current_chunk) + len(line) + 1 < 3800:
+                        current_chunk += line + "\n"
+                    else:
+                        if current_chunk:
+                            chunks.append(current_chunk.strip())
+                        current_chunk = line + "\n"
+                if current_chunk:
+                    chunks.append(current_chunk.strip())
+
+                try:
+                    await loading_msg.edit_text(chunks[0], parse_mode=constants.ParseMode.MARKDOWN)
+                except Exception:
+                    await loading_msg.edit_text(chunks[0])
+
+                for ch in chunks[1:]:
+                    try:
+                        await query.message.reply_text(ch, parse_mode=constants.ParseMode.MARKDOWN)
+                    except Exception:
+                        await query.message.reply_text(ch)
         except Exception as e:
             logger.error(f"Erro na auditoria crítica: {e}", exc_info=True)
             await loading_msg.edit_text(f"❌ Erro ao gerar auditoria crítica: {e}")

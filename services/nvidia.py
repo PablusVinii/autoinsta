@@ -108,7 +108,7 @@ CRITIQUE_PROMPT = """
 Você é o Auditor Crítico Sênior do Segundo Cérebro.
 Sua função NÃO é bajular, concordar ou elogiar o vídeo. Você deve agir como um "Advogado do Diabo" analítico, cético e experiente.
 
-Avalie a ideia com rigor profissional:
+Avalie o conteúdo com rigor profissional e pragmático:
 Título do Vídeo: {title}
 Categoria/Lente: {category}
 
@@ -117,19 +117,30 @@ Resumo do Vídeo:
 {summary}
 \"\"\"
 
-Estruture sua análise estritamente nos 4 tópicos abaixo:
+🚨 REGRAS CRÍTICAS DE FORMATAÇÃO PARA O TELEGRAM:
+1. NUNCA USE TABELAS (o Telegram em celulares quebra colunas e fica ilegível).
+2. Use ESTRITAMENTE tópicos limpos com marcadores e negrito: `• **Ponto Principal:** explicação clara e direta`.
+3. Seja cirúrgico, afiado e sintético (máximo de 2 a 3 itens por seção, sem enrolação).
+4. Entregue um texto elegante e fluido para leitura rápida na tela do celular.
 
-1. 🔍 O Que o Autor Omitiu ou Simplificou Demais:
-(Aponte o que faltou, etapas ignoradas ou meias-verdades).
+Estruture sua análise estritamente nestas 4 seções:
 
-2. ⚠️ Onde Isso Costuma Falhar na Prática:
-(Riscos reais, custos ocultos, atrito operacional ou curva de aprendizado).
+1. 🔍 O Que o Autor Omitiu ou Simplificou Demais
+• **Omissão 1:** explicação do que faltou ou foi simplificado
+• **Omissão 2:** etapas ignoradas ou meias-verdades
 
-3. 🎯 Para Quem Realmente Funciona:
-(Qual perfil se beneficia e quem vai apenas perder tempo ou dinheiro).
+2. ⚠️ Onde Isso Costuma Falhar na Prática
+• **Risco Real:** onde a teoria quebra no mundo real
+• **Custo Oculto / Atrito:** custos de tempo, dinheiro ou complexidade ignorados
 
-4. ⚖️ Veredito & Nota de Praticidade (1 a 10):
-(Nota de 1 a 10 acompanhada do veredito: "Execução Recomendada", "Cautela / Depende", ou "Puro Hype de Internet").
+3. 🎯 Para Quem Realmente Funciona
+• **Perfil Beneficiado:** quem realmente extrai valor disso
+• **Quem Vai Perder Tempo:** quem não deve tentar isso agora
+
+4. ⚖️ Veredito & Nota de Praticidade
+• **Nota de Praticidade:** [X]/10
+• **Classificação:** [Execução Recomendada / Cautela Necessária / Puro Hype de Internet]
+• **Veredito Executivo:** [1 ou 2 frases finais com a recomendação prática definitiva]
 """
 
 def generate_critical_analysis(title: str, category: str, summary: str, transcription: str = "") -> str:
@@ -155,12 +166,12 @@ def generate_critical_analysis(title: str, category: str, summary: str, transcri
             "messages": [
                 {
                     "role": "system",
-                    "content": "Você é um auditor de negócios e tecnologias sênior, cético e focado em viabilidade real.",
+                    "content": "Você é um auditor de negócios e tecnologias sênior, cético e focado em viabilidade real no mundo prático. NUNCA gere tabelas. Use apenas bullet points elegantes formatados para Telegram.",
                 },
                 {"role": "user", "content": prompt},
             ],
-            "max_tokens": 1024,
-            "temperature": 0.5,
+            "max_tokens": 2048,
+            "temperature": 0.4,
         }
         try:
             res = requests.post(url, headers=headers, json=payload, timeout=25)
