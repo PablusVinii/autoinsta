@@ -51,6 +51,11 @@ from services.database import (
     search_saved_videos,
     get_all_notes_for_synthesis,
 )
+from services.nvidia import (
+    generate_critical_analysis,
+    generate_audio_summary,
+    semantic_search,
+)
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -126,12 +131,17 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• 🧠 *Sabedoria & Filosofia:* Modelos mentais e quebra de paradigmas\n"
         "• 🙏 *Fé & Espiritualidade:* Mensagens bíblicas, princípios e devocional\n"
         "• ⚡ *Síntese Geral:* Resumo rápido e universal\n\n"
-        "🧠 *Segundo Cérebro & Obsidian:*\n"
+        "🧠 *Segundo Cérebro & Obsidian (com NVIDIA NIM):*\n"
         "• `/obsidian` — Ver notas recentes e conexões `[[Wikilinks]]`\n"
-        "• `/buscar <termo>` — Pesquisar assuntos ou ferramentas salvas\n"
-        "• `/consultar <pergunta>` — Perguntar à IA cruzando todo o seu cofre!\n"
+        "• `/buscar <termo>` — Pesquisa semântica por significado (NVIDIA Embeddings)\n"
+        "• `/consultar <pergunta>` — Síntese cruzada estratégica com RAG\n"
         "• `/salvos` — Histórico de vídeos salvos\n\n"
-        "💬 *Dica:* Você pode dar 'Reply' em qualquer resumo para tirar dúvidas com a IA, ou clicar em *Salvar no Notion* e *Salvar no Obsidian*!"
+        "⚡ *Superpoderes por Vídeo:*\n"
+        "• `[ 🎧 Ouvir Áudio ]` — Locução do resumo como mensagem de voz no Telegram\n"
+        "• `[ ⚖️ Auditoria Crítica ]` — Análise cética de riscos e viabilidade (NVIDIA)\n"
+        "• `[ 📓 Obsidian ]` — Sincronização automática com `[[Wikilinks]]`\n"
+        "• `[ 💾 Notion ]` — Envio direto para o banco de dados do Notion\n\n"
+        "💬 *Dica:* Você também pode dar 'Reply' em qualquer resumo para tirar dúvidas com a IA!"
     )
     await update.message.reply_text(text, parse_mode=constants.ParseMode.MARKDOWN)
 
@@ -208,7 +218,7 @@ async def obsidian_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode=constants.ParseMode.MARKDOWN)
 
 async def buscar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Busca termos, ferramentas ou conceitos nas notas e transcrições salvas."""
+    """Busca termos, ferramentas ou conceitos nas notas via busca textual e RAG Semântico da NVIDIA."""
     if not await check_user_allowed(update):
         return
 
@@ -228,7 +238,41 @@ async def buscar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args).strip()
     user_id = update.effective_user.id
 
-    results = search_saved_videos(user_id, query, limit=6)
+    # 1. Busca textual no SQLite
+    text_results = search_saved_videos(user_id, query, limit=6)
+
+    # 2. RAG Semântico vetorial com NVIDIA NIM (se configurado)
+    all_user_notes = get_all_notes_for_synthesis(user_id, limit=30)
+    semantic_results = []
+    if config.NVIDIA_API_KEY and all_user_notes:
+        try:
+            raw_semantic = await asyncio.to_thread(
+                semantic_search,
+                query,
+                all_user_notes,
+                top_k=5,
+            )
+            # Filtra notas com afinidade semântica significativa
+            semantic_results = [r for r in raw_semantic if r.get("similarity_score", 0) >= 0.28]
+        except Exception as e:
+            logger.warning(f"Aviso no RAG semântico da NVIDIA: {e}")
+
+    # Mescla resultados evitando duplicatas (privilegiando semânticos relevantes)
+    results = []
+    seen_titles = set()
+    for r in semantic_results:
+        t = r.get("title", "")
+        if t and t not in seen_titles:
+            seen_titles.add(t)
+            results.append(r)
+
+    for r in text_results:
+        t = r.get("title", "")
+        if t and t not in seen_titles:
+            seen_titles.add(t)
+            results.append(r)
+
+    results = results[:6]
 
     if not results:
         await update.message.reply_text(
@@ -245,6 +289,7 @@ async def buscar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cat = r["category"] or "Geral"
         links = r.get("wikilinks", "")
         summary = r.get("summary", "")
+        score = r.get("similarity_score")
 
         summary_preview = ""
         for s_line in summary.split("\n"):
@@ -253,6 +298,9 @@ async def buscar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 break
 
         entry = f"{i}. *{title}*\n   🏷️ `#{cat}` | 🔗 [{r['platform']}]({r['url']})"
+        if score:
+            pct = int(score * 100)
+            entry += f"\n   🎯 *Afinidade Semântica (NVIDIA):* `{pct}%`"
         if summary_preview:
             entry += f"\n   📌 _{summary_preview}..._"
         if links:
@@ -264,14 +312,14 @@ async def buscar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode=constants.ParseMode.MARKDOWN)
 
 async def consultar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Cruza o conhecimento acumulado no cofre do Obsidian e responde à pergunta com o Gemini."""
+    """Cruza o conhecimento acumulado no cofre do Obsidian com RAG Semântico NVIDIA e Gemini."""
     if not await check_user_allowed(update):
         return
 
     if not context.args:
         await update.message.reply_text(
             "🧠 *Modo \"Consultar Segundo Cérebro\":*\n\n"
-            "Faça uma pergunta e o Gemini cruzará as lições, metodologias e conexões de todos os vídeos que você salvou!\n\n"
+            "Faça uma pergunta e a IA cruzará as lições, metodologias e conexões de todos os vídeos salvos usando o RAG Semântico da NVIDIA!\n\n"
             "*Exemplos:*\n"
             "• `/consultar quais as principais estratégias de vendas que aprendi?`\n"
             "• `/consultar como usar IA para produtividade com base nas notas?`\n"
@@ -290,22 +338,35 @@ async def consultar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     loading = await update.message.reply_text(
         "🧠 *Consultando seu Segundo Cérebro...*\n"
-        "Cruzando notas, transcrições e gerando síntese com IA...",
+        "Buscando vetores semânticos com NVIDIA NIM e gerando síntese cruzada...",
         parse_mode=constants.ParseMode.MARKDOWN,
     )
 
-    # 1. Busca notas direcionadas pelo termo
-    targeted_notes = search_saved_videos(user_id, query, limit=8)
-    # 2. Busca também as notas recentes para ter contexto amplo
-    recent_notes = get_all_notes_for_synthesis(user_id, limit=15)
+    all_notes = get_all_notes_for_synthesis(user_id, limit=30)
 
-    seen_titles = set()
+    # 1. Recuperação Vetorial Semântica (NVIDIA RAG)
     combined_notes = []
-    for n in (targeted_notes + recent_notes):
-        t = n.get("title", "")
-        if t and t not in seen_titles:
-            seen_titles.add(t)
-            combined_notes.append(n)
+    if config.NVIDIA_API_KEY and all_notes:
+        try:
+            combined_notes = await asyncio.to_thread(
+                semantic_search,
+                query,
+                all_notes,
+                top_k=8,
+            )
+        except Exception as e:
+            logger.warning(f"Fallback de busca vetorial: {e}")
+
+    # Fallback se a busca vetorial não encontrar ou não estiver ativa
+    if not combined_notes:
+        targeted_notes = search_saved_videos(user_id, query, limit=8)
+        recent_notes = get_all_notes_for_synthesis(user_id, limit=15)
+        seen_titles = set()
+        for n in (targeted_notes + recent_notes):
+            t = n.get("title", "")
+            if t and t not in seen_titles:
+                seen_titles.add(t)
+                combined_notes.append(n)
 
     if not combined_notes:
         await loading.edit_text(
@@ -511,11 +572,15 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
             keyboard = [
                 [
-                    InlineKeyboardButton("📝 Ver Transcrição", callback_data=f"tx_{cache_id}"),
+                    InlineKeyboardButton("📝 Transcrição", callback_data=f"tx_{cache_id}"),
                     InlineKeyboardButton("💡 Ideias de Post", callback_data=f"idea_{cache_id}"),
+                    InlineKeyboardButton("🎧 Ouvir Áudio", callback_data=f"audio_{cache_id}"),
                 ],
                 [
+                    InlineKeyboardButton("⚖️ Auditoria Crítica", callback_data=f"critique_{cache_id}"),
                     InlineKeyboardButton("💬 Tirar Dúvida", callback_data=f"qa_{cache_id}"),
+                ],
+                [
                     InlineKeyboardButton("💾 Notion", callback_data=f"notion_{cache_id}"),
                     InlineKeyboardButton("📓 Obsidian", callback_data=f"obsidian_{cache_id}"),
                 ]
@@ -683,6 +748,86 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 caption="📄 *Aqui está o seu arquivo .md pronto com [[Wikilinks]]!* Basta soltá-lo no seu cofre do Obsidian.",
                 parse_mode=constants.ParseMode.MARKDOWN,
             )
+
+    # G) OUVIR RESUMO EM ÁUDIO (NEURAL TTS TELEGRAM)
+    elif data.startswith("audio_"):
+        cache_id = data[6:]
+        cached = VIDEO_CACHE.get(cache_id)
+        if not cached:
+            await query.message.reply_text("⚠️ As informações desse vídeo expiraram do cache.")
+            return
+
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id,
+            action=constants.ChatAction.RECORD_VOICE,
+        )
+
+        status_msg = await query.message.reply_text("🎧 *Gerando locução neural do resumo em áudio...*")
+
+        title = cached.get("title", "Vídeo")
+        summary = cached.get("summary", "")
+
+        audio_file = None
+        try:
+            audio_file = await generate_audio_summary(title, summary)
+            with open(audio_file, "rb") as f:
+                await context.bot.send_voice(
+                    chat_id=update.effective_chat.id,
+                    voice=f,
+                    caption=f"🎙️ *Resumo em Áudio:* {title[:60]}\n🏷️ `#{cached.get('category', 'Geral')}`",
+                    parse_mode=constants.ParseMode.MARKDOWN,
+                )
+            await status_msg.delete()
+        except Exception as e:
+            logger.error(f"Erro ao gerar áudio: {e}", exc_info=True)
+            await status_msg.edit_text(f"❌ Não foi possível gerar a locução de áudio: {e}")
+        finally:
+            if audio_file and os.path.exists(audio_file):
+                try:
+                    os.remove(audio_file)
+                except Exception:
+                    pass
+
+    # H) AUDITORIA CRÍTICA & ADVOGADO DO DIABO (NVIDIA NEMOTRON REASONING)
+    elif data.startswith("critique_"):
+        cache_id = data[9:]
+        cached = VIDEO_CACHE.get(cache_id)
+        if not cached:
+            await query.message.reply_text("⚠️ As informações desse vídeo expiraram do cache.")
+            return
+
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id,
+            action=constants.ChatAction.TYPING,
+        )
+
+        loading_msg = await query.message.reply_text(
+            "⚖️ *Executando Auditoria Crítica com IA da NVIDIA...*\n"
+            "Analisando pontos cegos, riscos operacionais e viabilidade real...",
+            parse_mode=constants.ParseMode.MARKDOWN,
+        )
+
+        title = cached.get("title", "Vídeo")
+        category = cached.get("category", "Geral")
+        summary = cached.get("summary", "")
+        transcription = cached.get("transcription", "")
+
+        try:
+            critique = await asyncio.to_thread(
+                generate_critical_analysis,
+                title,
+                category,
+                summary,
+                transcription,
+            )
+            resp = f"⚖️ *AUDITORIA CRÍTICA & VIABILIDADE (NVIDIA)*\n🎯 *Vídeo:* _{title}_\n\n{critique}"
+            try:
+                await loading_msg.edit_text(resp, parse_mode=constants.ParseMode.MARKDOWN)
+            except Exception:
+                await loading_msg.edit_text(resp)
+        except Exception as e:
+            logger.error(f"Erro na auditoria crítica: {e}", exc_info=True)
+            await loading_msg.edit_text(f"❌ Erro ao gerar auditoria crítica: {e}")
 
 async def setup_commands(application):
     """Configura o menu oficial de comandos e as sugestões automáticas ao digitar '/' no Telegram."""
