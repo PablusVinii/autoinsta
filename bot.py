@@ -139,7 +139,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/consultar <pergunta>` — Síntese cruzada estratégica com RAG\n"
         "• `/salvos` — Histórico de vídeos salvos\n\n"
         "⚡ *Superpoderes por Vídeo:*\n"
-        "• `[ 🎧 Ouvir Áudio ]` — Locução do resumo como mensagem de voz no Telegram\n"
+        "• `[ 🎙️ Dublagem pt-BR ]` — Dublagem multi-voz realista de toda a conversa traduzida\n"
+        "• `[ 🎧 Resumo Áudio ]` — Locução do resumo em mensagem de voz rápida\n"
         "• `[ ⚖️ Auditoria Crítica ]` — Análise cética de riscos e viabilidade (NVIDIA)\n"
         "• `[ 📓 Obsidian ]` — Sincronização automática com `[[Wikilinks]]`\n"
         "• `[ 💾 Notion ]` — Envio direto para o banco de dados do Notion\n\n"
@@ -575,10 +576,11 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             keyboard = [
                 [
                     InlineKeyboardButton("📝 Transcrição", callback_data=f"tx_{cache_id}"),
-                    InlineKeyboardButton("💡 Ideias de Post", callback_data=f"idea_{cache_id}"),
-                    InlineKeyboardButton("🎧 Ouvir Áudio", callback_data=f"audio_{cache_id}"),
+                    InlineKeyboardButton("🎙️ Dublagem pt-BR", callback_data=f"dub_{cache_id}"),
+                    InlineKeyboardButton("🎧 Resumo Áudio", callback_data=f"audio_{cache_id}"),
                 ],
                 [
+                    InlineKeyboardButton("💡 Ideias de Post", callback_data=f"idea_{cache_id}"),
                     InlineKeyboardButton("⚖️ Auditoria Crítica", callback_data=f"critique_{cache_id}"),
                     InlineKeyboardButton("💬 Tirar Dúvida", callback_data=f"qa_{cache_id}"),
                 ],
@@ -855,6 +857,55 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception as e:
             logger.error(f"Erro na auditoria crítica: {e}", exc_info=True)
             await loading_msg.edit_text(f"❌ Erro ao gerar auditoria crítica: {e}")
+
+    # I) DUBLAGEM MULTI-VOZ EM PORTUGUÊS (DEEPGRAM + VOZES NEURAIS)
+    elif data.startswith("dub_"):
+        cache_id = data[4:]
+        cached = VIDEO_CACHE.get(cache_id)
+        if not cached:
+            await query.message.reply_text("⚠️ As informações desse vídeo expiraram do cache.")
+            return
+
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id,
+            action=constants.ChatAction.RECORD_VOICE,
+        )
+
+        status_msg = await query.message.reply_text(
+            "🎙️ *Gerando Dublagem Multi-Voz em Português do Brasil...*\n"
+            "Atribuindo vozes neurais a cada locutor e sintetizando áudio...",
+            parse_mode=constants.ParseMode.MARKDOWN,
+        )
+
+        title = cached.get("title", "Vídeo")
+        transcription = cached.get("transcription", "")
+
+        if not transcription or len(transcription) < 10:
+            await status_msg.edit_text("❌ Transcrição não disponível para dublagem.")
+            return
+
+        audio_file = None
+        try:
+            from services.transcriber import generate_dubbed_audio
+            audio_file = await generate_dubbed_audio(transcription)
+
+            with open(audio_file, "rb") as f:
+                await context.bot.send_voice(
+                    chat_id=update.effective_chat.id,
+                    voice=f,
+                    caption=f"🎙️ *Dublagem Completa pt-BR:* {title[:60]}\n👥 *Vozes:* Deepgram Nova-3 + Neural Studio",
+                    parse_mode=constants.ParseMode.MARKDOWN,
+                )
+            await status_msg.delete()
+        except Exception as e:
+            logger.error(f"Erro na dublagem: {e}", exc_info=True)
+            await status_msg.edit_text(f"❌ Não foi possível gerar a dublagem: {e}")
+        finally:
+            if audio_file and os.path.exists(audio_file):
+                try:
+                    os.remove(audio_file)
+                except Exception:
+                    pass
 
 async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Processa mensagens de voz ou áudio gravadas diretamente no Telegram com Deepgram Nova-3."""

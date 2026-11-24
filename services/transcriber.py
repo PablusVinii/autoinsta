@@ -1,6 +1,10 @@
 import os
+import re
+import uuid
+import tempfile
 import requests
 import logging
+import edge_tts
 
 logger = logging.getLogger(__name__)
 
@@ -206,3 +210,94 @@ def transcribe_with_deepgram(file_path: str) -> tuple[str, str]:
             rotate_key()
 
     return "", ""
+
+VOICE_MAP = {
+    1: "pt-BR-AntonioNeural",    # Masculino executivo e dinâmico
+    2: "pt-BR-FranciscaNeural",  # Feminina clara e expressiva
+    3: "pt-BR-FabioNeural",      # Masculino alternativo
+    4: "pt-BR-ThalitaNeural",    # Feminina alternativa
+}
+
+def clean_speech_line(text: str) -> str:
+    """Limpa marcações e símbolos desnecessários para síntese de voz fluida."""
+    text = re.sub(r'[*#_>`~]', '', text)
+    text = re.sub(r'https?://\S+', '', text)
+    return text.strip()
+
+async def generate_dubbed_audio(transcription: str, output_file: str = None) -> str:
+    """
+    Gera um áudio de dublagem multi-voz em Português do Brasil a partir da transcrição diarizada.
+    Cada locutor recebe uma voz neural diferente e natural.
+    """
+    if not output_file:
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+        output_file = tmp.name
+        tmp.close()
+
+    pattern = r'🗣️\s*\*\*Locutor\s*(\d+):\*\*\s*(.+)'
+    turns = []
+    current_spk = 1
+    current_texts = []
+
+    lines = transcription.strip().split('\n')
+    has_speakers = False
+
+    for line in lines:
+        line_clean = line.strip()
+        if not line_clean:
+            continue
+        m = re.match(pattern, line_clean)
+        if m:
+            has_speakers = True
+            if current_texts:
+                turns.append((current_spk, ' '.join(current_texts)))
+                current_texts = []
+            current_spk = int(m.group(1))
+            current_texts.append(m.group(2))
+        else:
+            current_texts.append(line_clean)
+
+    if current_texts:
+        turns.append((current_spk, ' '.join(current_texts)))
+
+    # Se for monólogo sem múltiplos locutores
+    if not has_speakers:
+        clean = clean_speech_line(transcription)
+        if len(clean) > 3000:
+            clean = clean[:2950] + "... Fim da transcrição do vídeo."
+        comm = edge_tts.Communicate(clean, voice="pt-BR-AntonioNeural")
+        await comm.save(output_file)
+        return output_file
+
+    # Síntese multi-voz por turnos de fala
+    chunks = []
+    try:
+        for i, (spk, text) in enumerate(turns):
+            voice = VOICE_MAP.get(spk, "pt-BR-AntonioNeural")
+            clean = clean_speech_line(text)
+            if not clean:
+                continue
+            tmp_name = os.path.join(tempfile.gettempdir(), f"chunk_{uuid.uuid4().hex[:8]}_{i}.mp3")
+            comm = edge_tts.Communicate(clean, voice=voice)
+            await comm.save(tmp_name)
+            chunks.append(tmp_name)
+
+        with open(output_file, "wb") as fout:
+            for c in chunks:
+                if os.path.exists(c):
+                    with open(c, "rb") as f_in:
+                        fout.write(f_in.read())
+                    try:
+                        os.remove(c)
+                    except Exception:
+                        pass
+        return output_file
+    except Exception as e:
+        logger.error(f"[Dubbing Engine] Erro na síntese multi-voz: {e}")
+        for c in chunks:
+            if os.path.exists(c):
+                try:
+                    os.remove(c)
+                except Exception:
+                    pass
+        raise
