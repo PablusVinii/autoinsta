@@ -872,8 +872,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         )
 
         status_msg = await query.message.reply_text(
-            "🎙️ *Gerando Dublagem Multi-Voz em Português do Brasil...*\n"
-            "Atribuindo vozes neurais a cada locutor e sintetizando áudio...",
+            "🎙️ *Gerando Dublagem Expressiva com Deepgram Aura...*\n"
+            "Atribuindo vozes orgânicas (com respiração e entonação natural) a cada locutor...",
             parse_mode=constants.ParseMode.MARKDOWN,
         )
 
@@ -893,7 +893,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 await context.bot.send_voice(
                     chat_id=update.effective_chat.id,
                     voice=f,
-                    caption=f"🎙️ *Dublagem Completa pt-BR:* {title[:60]}\n👥 *Vozes:* Deepgram Nova-3 + Neural Studio",
+                    caption=f"🎙️ *Dublagem Expressiva:* {title[:60]}\n👥 *Vozes:* Deepgram Aura (Expressão & Sotaque Conversacional)",
                     parse_mode=constants.ParseMode.MARKDOWN,
                 )
             await status_msg.delete()

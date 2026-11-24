@@ -211,12 +211,45 @@ def transcribe_with_deepgram(file_path: str) -> tuple[str, str]:
 
     return "", ""
 
-VOICE_MAP = {
-    1: "pt-BR-AntonioNeural",    # Masculino executivo e dinâmico
-    2: "pt-BR-FranciscaNeural",  # Feminina clara e expressiva
-    3: "pt-BR-FabioNeural",      # Masculino alternativo
-    4: "pt-BR-ThalitaNeural",    # Feminina alternativa
+DEEPGRAM_AURA_VOICES = {
+    1: "aura-2-orion-en",   # Masculino conversacional, dinâmico e enérgico (Aura-2)
+    2: "aura-2-asteria-en", # Feminina expressiva, jovem e articulada (Aura-2)
+    3: "aura-2-arcas-en",   # Masculino grave, autoridade e profundidade (Aura-2)
+    4: "aura-2-luna-en",    # Feminina suave e natural (Aura-2)
 }
+
+def synthesize_turn_deepgram_aura(text: str, voice_model: str = "aura-2-orion-en") -> bytes:
+    """Sintetiza um trecho de texto usando o modelo de voz Deepgram Aura com rotação de chaves."""
+    clean_text = text.strip()
+    if not clean_text:
+        return b""
+
+    keys = get_keys()
+    for _ in range(len(keys)):
+        key = get_active_key()
+        headers = {
+            "Authorization": f"Token {key}",
+            "Content-Type": "application/json"
+        }
+        url = f"https://api.deepgram.com/v1/speak?model={voice_model}"
+        payload = {"text": clean_text}
+
+        try:
+            res = requests.post(url, headers=headers, json=payload, timeout=20)
+            if res.status_code == 200:
+                return res.content
+            elif res.status_code in (401, 402, 429):
+                logger.warning(f"[Deepgram Aura] Quota/Auth {res.status_code}. Rotacionando chave...")
+                rotate_key()
+                continue
+            else:
+                logger.warning(f"[Deepgram Aura] Status {res.status_code}: {res.text[:120]}")
+                break
+        except Exception as e:
+            logger.error(f"[Deepgram Aura] Erro de rede: {e}")
+            rotate_key()
+
+    return b""
 
 def clean_speech_line(text: str) -> str:
     """Limpa marcações e símbolos desnecessários para síntese de voz fluida."""
@@ -226,8 +259,8 @@ def clean_speech_line(text: str) -> str:
 
 async def generate_dubbed_audio(transcription: str, output_file: str = None) -> str:
     """
-    Gera um áudio de dublagem multi-voz em Português do Brasil a partir da transcrição diarizada.
-    Cada locutor recebe uma voz neural diferente e natural.
+    Gera um áudio de dublagem multi-voz com os modelos expressivos do Deepgram Aura (com sotaque conversacional autêntico).
+    Cada locutor recebe uma voz do Deepgram Aura diferente. Se falhar, usa fallback neural.
     """
     if not output_file:
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
@@ -262,42 +295,84 @@ async def generate_dubbed_audio(transcription: str, output_file: str = None) -> 
 
     # Se for monólogo sem múltiplos locutores
     if not has_speakers:
-        clean = clean_speech_line(transcription)
-        if len(clean) > 3000:
-            clean = clean[:2950] + "... Fim da transcrição do vídeo."
-        comm = edge_tts.Communicate(clean, voice="pt-BR-AntonioNeural")
-        await comm.save(output_file)
+        turns = [(1, transcription)]
+
+    # Sintetiza com Deepgram Aura
+    audio_chunks = []
+    use_fallback = False
+
+    for spk, text in turns:
+        clean = clean_speech_line(text)
+        if not clean:
+            continue
+
+        voice_aura = DEEPGRAM_AURA_VOICES.get(spk, "aura-2-orion-en")
+        
+        # Deepgram aceita blocos de texto; se for muito longo, divide em frases
+        sub_chunks = []
+        if len(clean) > 1500:
+            sentences = re.split(r'(?<=[.!?])\s+', clean)
+            curr = ""
+            for s in sentences:
+                if len(curr) + len(s) < 1200:
+                    curr += s + " "
+                else:
+                    if curr: sub_chunks.append(curr.strip())
+                    curr = s + " "
+            if curr: sub_chunks.append(curr.strip())
+        else:
+            sub_chunks = [clean]
+
+        for chunk_text in sub_chunks:
+            chunk_bytes = synthesize_turn_deepgram_aura(chunk_text, voice_aura)
+            if chunk_bytes:
+                audio_chunks.append(chunk_bytes)
+            else:
+                use_fallback = True
+                break
+        if use_fallback:
+            break
+
+    # Se Deepgram Aura gerou os bytes com sucesso, salva no arquivo
+    if audio_chunks and not use_fallback:
+        with open(output_file, "wb") as fout:
+            for b in audio_chunks:
+                fout.write(b)
+        logger.info(f"[Deepgram Aura] Dublagem gerada com sucesso via Aura ({os.path.getsize(output_file)} bytes).")
         return output_file
 
-    # Síntese multi-voz por turnos de fala
-    chunks = []
+    # Fallback seguro para Edge TTS se o Aura estiver sem cota
+    logger.warning("[Deepgram Aura] Usando fallback neural para dublagem...")
+    VOICE_FALLBACK = {
+        1: "pt-BR-AntonioNeural",
+        2: "pt-BR-FranciscaNeural",
+        3: "pt-BR-FabioNeural",
+        4: "pt-BR-ThalitaNeural",
+    }
+    fb_chunks = []
     try:
         for i, (spk, text) in enumerate(turns):
-            voice = VOICE_MAP.get(spk, "pt-BR-AntonioNeural")
+            voice = VOICE_FALLBACK.get(spk, "pt-BR-AntonioNeural")
             clean = clean_speech_line(text)
             if not clean:
                 continue
-            tmp_name = os.path.join(tempfile.gettempdir(), f"chunk_{uuid.uuid4().hex[:8]}_{i}.mp3")
+            tmp_name = os.path.join(tempfile.gettempdir(), f"fb_chunk_{uuid.uuid4().hex[:8]}_{i}.mp3")
             comm = edge_tts.Communicate(clean, voice=voice)
             await comm.save(tmp_name)
-            chunks.append(tmp_name)
+            fb_chunks.append(tmp_name)
 
         with open(output_file, "wb") as fout:
-            for c in chunks:
+            for c in fb_chunks:
                 if os.path.exists(c):
                     with open(c, "rb") as f_in:
                         fout.write(f_in.read())
-                    try:
-                        os.remove(c)
-                    except Exception:
-                        pass
+                    try: os.remove(c)
+                    except Exception: pass
         return output_file
     except Exception as e:
-        logger.error(f"[Dubbing Engine] Erro na síntese multi-voz: {e}")
-        for c in chunks:
+        logger.error(f"[Dubbing Fallback] Erro no fallback: {e}")
+        for c in fb_chunks:
             if os.path.exists(c):
-                try:
-                    os.remove(c)
-                except Exception:
-                    pass
+                try: os.remove(c)
+                except Exception: pass
         raise
