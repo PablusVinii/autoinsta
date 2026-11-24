@@ -1,7 +1,10 @@
 import time
 import re
+import logging
 from google import genai
 import config
+
+logger = logging.getLogger(__name__)
 
 LENS_METADATA = {
     "biz": {
@@ -241,12 +244,28 @@ def analyze_youtube_url_direct(youtube_url: str, lens: str = "gen", model_name: 
 
 def analyze_and_summarize_video(file_path: str, lens: str = "gen", model_name: str = None) -> tuple[str, str]:
     """
-    Faz upload do arquivo local (Instagram, TikTok, Twitter) para a Gemini API e analisa
-    utilizando a lente temática selecionada.
+    Transcreve com Deepgram Nova-3 (com Diarização de locutores e isolamento de música)
+    e analisa na API do Gemini utilizando a lente temática selecionada.
     """
+    from services.transcriber import transcribe_with_deepgram
+
+    # 1. Transcrição ultrarrápida com Deepgram Nova-3 e Diarização de locutores
+    dg_plain, dg_diarized = "", ""
+    try:
+        dg_plain, dg_diarized = transcribe_with_deepgram(file_path)
+    except Exception as e:
+        logger.warning(f"[Transcriber] Aviso ao transcrever com Deepgram: {e}")
+
     model = model_name or config.GEMINI_MODEL
     client = genai.Client(api_key=config.GEMINI_API_KEY)
     prompt = get_prompt_for_lens(lens)
+
+    if dg_diarized:
+        prompt += (
+            f"\n\n[TRANSCRIÇÃO DE ALTA FIDELIDADE COM SEPARAÇÃO DE LOCUTORES (DEEPGRAM NOVA-3)]:\n"
+            f"{dg_diarized}\n\n"
+            f"Instrução Adicional: Use a transcrição acima para atribuir precisamente argumentos aos seus respectivos locutores."
+        )
 
     myfile = client.files.upload(file=file_path)
 
@@ -295,11 +314,15 @@ def analyze_and_summarize_video(file_path: str, lens: str = "gen", model_name: s
         else:
             summary = output.strip()
 
-        transcription_match = re.search(r"\[INICIO_TRANSCRICAO\](.*?)\[FIM_TRANSCRICAO\]", output, re.DOTALL)
-        if transcription_match:
-            transcription = transcription_match.group(1).strip()
+        # Prioriza a transcrição diarizada e cristalina do Deepgram Nova-3
+        if dg_diarized:
+            transcription = dg_diarized
         else:
-            transcription = "Transcrição não disponível separadamente."
+            transcription_match = re.search(r"\[INICIO_TRANSCRICAO\](.*?)\[FIM_TRANSCRICAO\]", output, re.DOTALL)
+            if transcription_match:
+                transcription = transcription_match.group(1).strip()
+            else:
+                transcription = "Transcrição não disponível separadamente."
 
         return summary, transcription
 

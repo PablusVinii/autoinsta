@@ -4,6 +4,7 @@ import os
 import threading
 import uuid
 import time
+from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import (
     Update,
@@ -123,7 +124,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• 📸 *Instagram:* Reels e vídeos do feed\n"
         "• ▶️ *YouTube:* Shorts e vídeos completos\n"
         "• 🎵 *TikTok:* Vídeos e links compartilhados\n"
-        "• 🐦 *Twitter / X:* Posts com vídeo\n\n"
+        "• 🐦 *Twitter / X:* Posts com vídeo\n"
+        "• 🎙️ *Notas de Voz:* Envie áudios gravados no Telegram para transcrever instantaneamente com Deepgram Nova-3!\n\n"
         "🎯 *Como Funciona (Lentes Especializadas):*\n"
         "Basta colar ou compartilhar um link! Eu perguntarei qual tipo de extração você deseja:\n"
         "• 💼 *Negócios & Vendas:* Estratégias, frameworks e monetização\n"
@@ -854,6 +856,97 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             logger.error(f"Erro na auditoria crítica: {e}", exc_info=True)
             await loading_msg.edit_text(f"❌ Erro ao gerar auditoria crítica: {e}")
 
+async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Processa mensagens de voz ou áudio gravadas diretamente no Telegram com Deepgram Nova-3."""
+    if not update.message:
+        return
+
+    if not await check_user_allowed(update):
+        await update.message.reply_text("⛔ Acesso não autorizado a este bot.")
+        return
+
+    voice = update.message.voice or update.message.audio
+    if not voice:
+        return
+
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id,
+        action=constants.ChatAction.TYPING,
+    )
+
+    status_msg = await update.message.reply_text("⚡ *Transcrevendo áudio com Deepgram Nova-3 e Diarização...*")
+
+    tmp_path = None
+    try:
+        tg_file = await context.bot.get_file(voice.file_id)
+        tmp_path = f"voice_{uuid.uuid4().hex[:8]}.ogg"
+        await tg_file.download_to_drive(tmp_path)
+
+        from services.transcriber import transcribe_with_deepgram
+        plain, diarized = await asyncio.to_thread(transcribe_with_deepgram, tmp_path)
+
+        if not plain:
+            await status_msg.edit_text("❌ Não foi possível transcrever o áudio ou nenhuma fala foi detectada.")
+            return
+
+        user_id = update.effective_user.id
+        title = f"Nota de Voz ({datetime.now().strftime('%d/%m %H:%M')})"
+        category = "Nota de Voz"
+        platform = "Telegram Áudio"
+
+        # Salva no banco de dados
+        save_video(
+            user_id=user_id,
+            title=title,
+            category=category,
+            platform=platform,
+            url="",
+            summary=diarized,
+            transcription=diarized,
+        )
+
+        cache_id = str(uuid.uuid4())[:8]
+        VIDEO_CACHE[cache_id] = {
+            "summary": diarized,
+            "transcription": diarized,
+            "url": "",
+            "platform": platform,
+            "category": category,
+            "title": title,
+            "time": time.time(),
+        }
+
+        keyboard = [
+            [
+                InlineKeyboardButton("💡 Ideias de Post", callback_data=f"idea_{cache_id}"),
+                InlineKeyboardButton("⚖️ Auditoria Crítica", callback_data=f"critique_{cache_id}"),
+            ],
+            [
+                InlineKeyboardButton("💾 Notion", callback_data=f"notion_{cache_id}"),
+                InlineKeyboardButton("📓 Obsidian", callback_data=f"obsidian_{cache_id}"),
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        resp = f"🎙️ *TRANSCRIÇÃO DE VOZ (Deepgram Nova-3)*\n\n{diarized}"
+        if len(resp) <= 4000:
+            try:
+                await status_msg.edit_text(resp, parse_mode=constants.ParseMode.MARKDOWN, reply_markup=reply_markup)
+            except Exception:
+                await status_msg.edit_text(resp, reply_markup=reply_markup)
+        else:
+            await status_msg.edit_text(resp[:3900], reply_markup=reply_markup)
+
+    except Exception as e:
+        logger.error(f"Erro ao processar voz no Telegram: {e}", exc_info=True)
+        await status_msg.edit_text(f"❌ Erro ao transcrever mensagem de voz: {e}")
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
 async def setup_commands(application):
     """Configura o menu oficial de comandos e as sugestões automáticas ao digitar '/' no Telegram."""
     commands = [
@@ -894,7 +987,8 @@ def main():
     app.add_handler(CommandHandler("cerebro", consultar_command))
     app.add_handler(CommandHandler("perguntar", consultar_command))
 
-    # Mensagens de texto e callbacks
+    # Mensagens de texto, áudios de voz e callbacks
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice_message))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback_query))
 

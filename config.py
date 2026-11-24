@@ -9,6 +9,7 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-4-hydrogen").strip()
 NOTION_API_KEY = os.getenv("NOTION_API_KEY", "").strip()
 NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID", "").strip()
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY", "").strip()
+DEEPGRAM_KEYS = os.getenv("DEEPGRAM_KEYS", "").strip()
 
 _allowed_raw = os.getenv("ALLOWED_USER_IDS", "").strip()
 if _allowed_raw:
