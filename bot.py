@@ -68,6 +68,7 @@ from services.blog import (
     publish_to_github_blog,
     next_blog_angle,
 )
+from services.visuals import generate_disruptive_cover
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -927,7 +928,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 except Exception:
                     pass
 
-    # J) LINKEDIN: GERAR RASCUNHO / TROCAR TOM / PUBLICAR / CANCELAR
+    # J) LINKEDIN: GERAR RASCUNHO + CAPA VISUAL / TROCAR TOM / NOVA IMAGEM / PUBLICAR / CANCELAR
     elif data.startswith("li_prep_") or data.startswith("li_regen_"):
         is_regen = data.startswith("li_regen_")
         cache_id = data[len("li_regen_"):] if is_regen else data[len("li_prep_"):]
@@ -950,7 +951,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             )
         else:
             status_msg = await query.message.reply_text(
-                "💼 *Redigindo rascunho otimizado para o LinkedIn...*",
+                "💼🎨 *Redigindo post e criando capa visual disruptiva para o LinkedIn...*",
                 parse_mode=constants.ParseMode.MARKDOWN,
             )
 
@@ -965,20 +966,39 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             cached["linkedin_draft"] = draft
             cached["linkedin_angle"] = angle
 
+            if not cached.get("cover_bytes") and not is_regen:
+                try:
+                    cover_bytes = await asyncio.to_thread(
+                        generate_disruptive_cover,
+                        cached.get("title", "Infraestrutura & Tecnologia"),
+                        cached.get("summary", ""),
+                    )
+                    cached["cover_bytes"] = cover_bytes
+                    await context.bot.send_photo(
+                        chat_id=update.effective_chat.id,
+                        photo=cover_bytes,
+                        caption="🎨 *Capa visual disruptiva gerada* — será anexada ao publicar no LinkedIn.",
+                        parse_mode=constants.ParseMode.MARKDOWN,
+                    )
+                except Exception as img_err:
+                    logger.warning(f"[LinkedIn] Falha ao gerar imagem de capa: {img_err}")
+
             preview_keyboard = InlineKeyboardMarkup([
                 [
                     InlineKeyboardButton("🚀 Publicar Agora", callback_data=f"li_pub_{cache_id}"),
                     InlineKeyboardButton("🔄 Outro Tom", callback_data=f"li_regen_{cache_id}"),
                 ],
                 [
+                    InlineKeyboardButton("🎨 Nova Imagem", callback_data=f"li_img_{cache_id}"),
                     InlineKeyboardButton("❌ Cancelar", callback_data=f"li_cancel_{cache_id}"),
                 ],
             ])
 
+            has_img = "✅ Capa anexada" if cached.get("cover_bytes") else "📝 Somente texto"
             preview_text = (
-                f"💼 RASCUNHO LINKEDIN (tom: {angle})\n"
+                f"💼 RASCUNHO LINKEDIN (tom: {angle} · {has_img})\n"
                 f"────────────────────────\n\n"
-                f"{draft[:3500]}\n\n"
+                f"{draft[:3400]}\n\n"
                 f"────────────────────────\n"
                 f"Revise o texto acima antes de publicar:"
             )
@@ -986,6 +1006,32 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception as e:
             logger.error(f"Erro ao gerar rascunho LinkedIn: {e}", exc_info=True)
             await status_msg.edit_text(f"❌ Erro ao gerar rascunho para o LinkedIn: {e}")
+
+    elif data.startswith("li_img_"):
+        cache_id = data[len("li_img_"):]
+        cached = VIDEO_CACHE.get(cache_id)
+        if not cached:
+            await query.message.reply_text("⚠️ As informações desse vídeo expiraram do cache.")
+            return
+
+        wait_img = await query.message.reply_text("🎨 *Gerando uma nova capa visual disruptiva...*", parse_mode=constants.ParseMode.MARKDOWN)
+        try:
+            cover_bytes = await asyncio.to_thread(
+                generate_disruptive_cover,
+                cached.get("title", "Tecnologia"),
+                cached.get("summary", ""),
+                "use a completely different visual metaphor, dramatic lighting and angle",
+            )
+            cached["cover_bytes"] = cover_bytes
+            await context.bot.send_photo(
+                chat_id=update.effective_chat.id,
+                photo=cover_bytes,
+                caption="🎨 *Nova capa atualizada!* Clique em '🚀 Publicar Agora' acima para postar com esta imagem.",
+                parse_mode=constants.ParseMode.MARKDOWN,
+            )
+            await wait_img.delete()
+        except Exception as e:
+            await wait_img.edit_text(f"❌ Não foi possível gerar nova imagem: {e}")
 
     elif data.startswith("li_pub_"):
         cache_id = data[len("li_pub_"):]
@@ -995,8 +1041,9 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             return
 
         draft = cached["linkedin_draft"]
-        await query.message.edit_text("🚀 Publicando no seu perfil do LinkedIn...")
-        ok, result = await asyncio.to_thread(publish_linkedin_post, draft)
+        cover_bytes = cached.get("cover_bytes")
+        await query.message.edit_text("🚀 Publicando post + capa no seu perfil do LinkedIn...")
+        ok, result = await asyncio.to_thread(publish_linkedin_post, draft, cover_bytes)
         if ok:
             await query.message.edit_text(
                 f"✅ Post publicado no LinkedIn com sucesso!\n\n🔗 {result}"
@@ -1011,7 +1058,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             cached.pop("linkedin_draft", None)
         await query.message.edit_text("❌ Publicação no LinkedIn cancelada.")
 
-    # K) BLOG GITHUB.IO: GERAR ARTIGO / TROCAR TOM / PUBLICAR / CANCELAR
+    # K) BLOG GITHUB.IO: GERAR ARTIGO + CAPA VISUAL / TROCAR TOM / NOVA IMAGEM / PUBLICAR / CANCELAR
     elif data.startswith("blog_prep_") or data.startswith("blog_regen_"):
         is_regen = data.startswith("blog_regen_")
         cache_id = data[len("blog_regen_"):] if is_regen else data[len("blog_prep_"):]
@@ -1034,7 +1081,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             )
         else:
             status_msg = await query.message.reply_text(
-                "🌐 *Redigindo artigo autoral para o seu Blog (github.io)...*",
+                "🌐🎨 *Redigindo artigo e criando capa visual disruptiva para o Blog...*",
                 parse_mode=constants.ParseMode.MARKDOWN,
             )
 
@@ -1055,22 +1102,41 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             }
             cached["blog_angle"] = angle
 
+            if not cached.get("cover_bytes") and not is_regen:
+                try:
+                    cover_bytes = await asyncio.to_thread(
+                        generate_disruptive_cover,
+                        art_title,
+                        cached.get("summary", ""),
+                    )
+                    cached["cover_bytes"] = cover_bytes
+                    await context.bot.send_photo(
+                        chat_id=update.effective_chat.id,
+                        photo=cover_bytes,
+                        caption="🎨 *Capa visual disruptiva do artigo* — será publicada no topo do post no github.io.",
+                        parse_mode=constants.ParseMode.MARKDOWN,
+                    )
+                except Exception as img_err:
+                    logger.warning(f"[Blog] Falha ao gerar imagem de capa: {img_err}")
+
             preview_keyboard = InlineKeyboardMarkup([
                 [
                     InlineKeyboardButton("🚀 Publicar no Blog", callback_data=f"blog_pub_{cache_id}"),
                     InlineKeyboardButton("🔄 Outro Tom", callback_data=f"blog_regen_{cache_id}"),
                 ],
                 [
+                    InlineKeyboardButton("🎨 Nova Imagem", callback_data=f"blog_img_{cache_id}"),
                     InlineKeyboardButton("❌ Cancelar", callback_data=f"blog_cancel_{cache_id}"),
                 ],
             ])
 
+            has_img = "✅ Capa anexada" if cached.get("cover_bytes") else "📝 Sem imagem"
             preview_text = (
-                f"🌐 RASCUNHO DE ARTIGO ({angle})\n"
+                f"🌐 RASCUNHO DE ARTIGO ({angle} · {has_img})\n"
                 f"────────────────────────\n"
                 f"Título: {art_title}\n"
                 f"Resumo: {excerpt}\n\n"
-                f"{body[:2800]}\n"
+                f"{body[:2700]}\n"
                 f"────────────────────────\n"
                 f"Deseja publicar no seu GitHub Pages?"
             )
@@ -1078,6 +1144,33 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception as e:
             logger.error(f"Erro ao gerar artigo do blog: {e}", exc_info=True)
             await status_msg.edit_text(f"❌ Erro ao gerar artigo para o Blog: {e}")
+
+    elif data.startswith("blog_img_"):
+        cache_id = data[len("blog_img_"):]
+        cached = VIDEO_CACHE.get(cache_id)
+        if not cached:
+            await query.message.reply_text("⚠️ As informações desse vídeo expiraram do cache.")
+            return
+
+        wait_img = await query.message.reply_text("🎨 *Gerando uma nova capa visual disruptiva para o Blog...*", parse_mode=constants.ParseMode.MARKDOWN)
+        try:
+            draft_title = cached.get("blog_draft", {}).get("title") or cached.get("title", "Tecnologia")
+            cover_bytes = await asyncio.to_thread(
+                generate_disruptive_cover,
+                draft_title,
+                cached.get("summary", ""),
+                "use a completely different visual metaphor, dramatic lighting and angle",
+            )
+            cached["cover_bytes"] = cover_bytes
+            await context.bot.send_photo(
+                chat_id=update.effective_chat.id,
+                photo=cover_bytes,
+                caption="🎨 *Nova capa atualizada!* Clique em '🚀 Publicar no Blog' acima para postar com esta imagem.",
+                parse_mode=constants.ParseMode.MARKDOWN,
+            )
+            await wait_img.delete()
+        except Exception as e:
+            await wait_img.edit_text(f"❌ Não foi possível gerar nova imagem: {e}")
 
     elif data.startswith("blog_pub_"):
         cache_id = data[len("blog_pub_"):]
@@ -1087,13 +1180,15 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             await query.message.reply_text("⚠️ Rascunho expirado. Clique em '🌐 Post Blog' novamente.")
             return
 
-        await query.message.edit_text("🚀 Publicando artigo no repositório GitHub Pages...")
+        cover_bytes = cached.get("cover_bytes")
+        await query.message.edit_text("🚀 Publicando artigo + capa no repositório GitHub Pages...")
         ok, result = await asyncio.to_thread(
             publish_to_github_blog,
             draft["title"],
             draft["excerpt"],
             draft["body"],
             draft["category"],
+            cover_bytes,
         )
         if ok:
             await query.message.edit_text(

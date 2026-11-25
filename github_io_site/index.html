@@ -198,6 +198,7 @@
           const filtered = filterCat === 'all' ? posts : posts.filter(p => p.category === filterCat);
           container.innerHTML = filtered.map(post => `
             <a href="post.html?slug=${encodeURIComponent(post.slug)}" class="card blog-card">
+              ${post.cover ? `<img src="${escapeHtml(post.cover)}" alt="${escapeHtml(post.title)}" class="blog-card-cover" loading="lazy" />` : ''}
               <div class="blog-meta">
                 <span class="project-badge">${escapeHtml(post.category || 'Infraestrutura')}</span>
                 <span class="mono date-text">${escapeHtml(post.date || '')} · ${escapeHtml(post.readTime || '3 min')}</span>

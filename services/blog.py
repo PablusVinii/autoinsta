@@ -108,8 +108,8 @@ REGRAS CRÍTICAS:
     return article_title, excerpt, body
 
 
-def _github_put_file(repo: str, token: str, path: str, content_str: str, message: str) -> tuple[bool, str]:
-    """Cria ou atualiza um arquivo em um repositório GitHub via Contents API."""
+def _github_put_bytes(repo: str, token: str, path: str, raw_bytes: bytes, message: str) -> tuple[bool, str]:
+    """Cria ou atualiza um arquivo binário/texto em um repositório GitHub via Contents API."""
     url = f"https://api.github.com/repos/{repo}/contents/{path}"
     headers = {
         "Authorization": f"Bearer {token}",
@@ -121,15 +121,20 @@ def _github_put_file(repo: str, token: str, path: str, content_str: str, message
     if get_res.status_code == 200:
         sha = get_res.json().get("sha")
 
-    encoded = base64.b64encode(content_str.encode("utf-8")).decode("utf-8")
+    encoded = base64.b64encode(raw_bytes).decode("utf-8")
     payload = {"message": message, "content": encoded}
     if sha:
         payload["sha"] = sha
 
-    put_res = requests.put(url, headers=headers, json=payload, timeout=20)
+    put_res = requests.put(url, headers=headers, json=payload, timeout=30)
     if put_res.status_code in (200, 201):
         return True, "OK"
     return False, f"GitHub API ({put_res.status_code}): {put_res.text[:200]}"
+
+
+def _github_put_file(repo: str, token: str, path: str, content_str: str, message: str) -> tuple[bool, str]:
+    """Cria ou atualiza um arquivo de texto em um repositório GitHub via Contents API."""
+    return _github_put_bytes(repo, token, path, content_str.encode("utf-8"), message)
 
 
 def publish_to_github_blog(
@@ -137,6 +142,7 @@ def publish_to_github_blog(
     excerpt: str,
     markdown_body: str,
     category: str = "Geral",
+    image_bytes: bytes = None,
 ) -> tuple[bool, str]:
     """
     Publica o artigo .md e atualiza posts/index.json no repositório GitHub Pages.
@@ -159,7 +165,23 @@ def publish_to_github_blog(
     word_count = len(markdown_body.split())
     read_mins = max(1, round(word_count / 200))
 
-    # 1. Envia o arquivo Markdown do artigo
+    # 1. Envia a imagem de capa (se houver)
+    cover_path = ""
+    if image_bytes:
+        img_path = f"posts/images/{slug}.png"
+        ok_img, msg_img = _github_put_bytes(
+            repo=repo,
+            token=token,
+            path=img_path,
+            raw_bytes=image_bytes,
+            message=f"blog: adiciona capa '{slug}'",
+        )
+        if ok_img:
+            cover_path = img_path
+        else:
+            logger.warning(f"[Blog] Falha ao subir imagem de capa: {msg_img}")
+
+    # 2. Envia o arquivo Markdown do artigo
     ok, msg = _github_put_file(
         repo=repo,
         token=token,
@@ -170,7 +192,7 @@ def publish_to_github_blog(
     if not ok:
         return False, f"Erro ao salvar artigo no GitHub: {msg}"
 
-    # 2. Lê e atualiza posts/index.json
+    # 3. Lê e atualiza posts/index.json
     index_url = f"https://api.github.com/repos/{repo}/contents/posts/index.json"
     headers = {
         "Authorization": f"Bearer {token}",
@@ -195,6 +217,8 @@ def publish_to_github_blog(
         "readTime": f"{read_mins} min",
         "file": md_path,
     }
+    if cover_path:
+        new_entry["cover"] = cover_path
     # Evita duplicar slug se republicado
     posts_list = [new_entry] + [p for p in posts_list if p.get("slug") != slug]
 

@@ -399,6 +399,24 @@ body {
   color: #c4b5fd;
 }
 
+.blog-card-cover {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 10px;
+  margin-bottom: 14px;
+  border: 1px solid var(--border);
+}
+
+.article-cover {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 14px;
+  margin-bottom: 22px;
+  border: 1px solid var(--border);
+}
+
 /* POST READER */
 .article-wrap {
   max-width: 760px;

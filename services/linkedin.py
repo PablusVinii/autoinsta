@@ -110,9 +110,57 @@ def _resolve_person_urn(token: str) -> str:
     return ""
 
 
-def publish_linkedin_post(text: str) -> tuple[bool, str]:
+def _upload_linkedin_image(token: str, person_urn: str, image_bytes: bytes) -> str:
+    """Registra e envia uma imagem PNG para a API de Assets do LinkedIn, retornando o asset URN."""
+    reg_url = "https://api.linkedin.com/v2/assets?action=registerUpload"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "X-Restli-Protocol-Version": "2.0.0",
+    }
+    reg_payload = {
+        "registerUploadRequest": {
+            "recipes": ["urn:li:digitalmediaRecipe:feedshare-image"],
+            "owner": person_urn,
+            "serviceRelationships": [
+                {
+                    "relationshipType": "OWNER",
+                    "identifier": "urn:li:userGeneratedContent",
+                }
+            ],
+        }
+    }
+    reg_res = requests.post(reg_url, headers=headers, json=reg_payload, timeout=20)
+    if reg_res.status_code not in (200, 201):
+        raise RuntimeError(f"RegisterUpload ({reg_res.status_code}): {reg_res.text[:200]}")
+
+    reg_data = reg_res.json().get("value", {})
+    asset_urn = reg_data.get("asset", "")
+    upload_mech = reg_data.get("uploadMechanism", {}).get(
+        "com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest", {}
+    )
+    upload_url = upload_mech.get("uploadUrl", "")
+    if not asset_urn or not upload_url:
+        raise RuntimeError("Resposta inválida do registerUpload do LinkedIn.")
+
+    put_res = requests.put(
+        upload_url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "image/png",
+        },
+        data=image_bytes,
+        timeout=30,
+    )
+    if put_res.status_code not in (200, 201):
+        raise RuntimeError(f"Upload binário da imagem ({put_res.status_code}): {put_res.text[:200]}")
+
+    return asset_urn
+
+
+def publish_linkedin_post(text: str, image_bytes: bytes = None) -> tuple[bool, str]:
     """
-    Publica um post de texto no perfil pessoal do LinkedIn via API oficial.
+    Publica um post (texto ou texto + imagem) no perfil pessoal do LinkedIn via API oficial.
     Retorna (sucesso, url_ou_mensagem_erro).
     """
     token = config.LINKEDIN_ACCESS_TOKEN
@@ -123,14 +171,30 @@ def publish_linkedin_post(text: str) -> tuple[bool, str]:
     if not person_urn:
         return False, "Não foi possível identificar o LinkedIn Person URN. Verifique o token e o escopo openid/profile."
 
+    share_content = {
+        "shareCommentary": {"text": text[:3000]},
+        "shareMediaCategory": "NONE",
+    }
+
+    if image_bytes:
+        try:
+            asset_urn = _upload_linkedin_image(token, person_urn, image_bytes)
+            share_content["shareMediaCategory"] = "IMAGE"
+            share_content["media"] = [
+                {
+                    "status": "READY",
+                    "media": asset_urn,
+                }
+            ]
+        except Exception as e:
+            logger.error(f"[LinkedIn] Erro ao subir imagem: {e}")
+            return False, f"Erro ao enviar imagem para o LinkedIn: {e}"
+
     payload = {
         "author": person_urn,
         "lifecycleState": "PUBLISHED",
         "specificContent": {
-            "com.linkedin.ugc.ShareContent": {
-                "shareCommentary": {"text": text[:3000]},
-                "shareMediaCategory": "NONE",
-            }
+            "com.linkedin.ugc.ShareContent": share_content
         },
         "visibility": {"com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"},
     }
