@@ -52,6 +52,8 @@ from services.database import (
     update_obsidian_data,
     search_saved_videos,
     get_all_notes_for_synthesis,
+    save_cache_entry,
+    get_cache_entry,
 )
 from services.nvidia import (
     generate_critical_analysis,
@@ -87,11 +89,37 @@ MESSAGE_CACHE_MAP = {}
 PENDING_REQUESTS = {}
 
 def clean_expired_cache():
-    """Remove entradas com mais de 24 horas para economizar memória."""
+    """Remove entradas com mais de 24 horas da RAM para economizar memória."""
     now = time.time()
     expired = [k for k, v in VIDEO_CACHE.items() if now - v.get("time", 0) > 86400]
     for k in expired:
         VIDEO_CACHE.pop(k, None)
+
+
+def set_cached_video(cache_id: str, data: dict):
+    """Salva na RAM e persiste no banco para sobreviver a reinícios no Render."""
+    VIDEO_CACHE[cache_id] = data
+    try:
+        save_cache_entry(cache_id, data)
+    except Exception as e:
+        logger.warning(f"[Cache] Erro ao persistir cache {cache_id}: {e}")
+
+
+def get_cached_video(cache_id: str) -> dict | None:
+    """Busca na RAM e faz fallback automático no banco caso o servidor tenha reiniciado."""
+    if not cache_id:
+        return None
+    cached = VIDEO_CACHE.get(cache_id)
+    if cached:
+        return cached
+    try:
+        cached = get_cache_entry(cache_id)
+        if cached:
+            VIDEO_CACHE[cache_id] = cached
+            return cached
+    except Exception as e:
+        logger.warning(f"[Cache] Erro ao recuperar cache {cache_id}: {e}")
+    return None
 
     expired_pending = [k for k, v in PENDING_REQUESTS.items() if now - v.get("time", 0) > 3600]
     for k in expired_pending:
@@ -427,8 +455,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         replied_msg_id = update.message.reply_to_message.message_id
         cache_id = MESSAGE_CACHE_MAP.get(replied_msg_id)
 
-        if cache_id and cache_id in VIDEO_CACHE:
-            video_data = VIDEO_CACHE[cache_id]
+        if cache_id:
+            video_data = get_cached_video(cache_id)
             await context.bot.send_chat_action(
                 chat_id=update.effective_chat.id,
                 action=constants.ChatAction.TYPING,
@@ -545,7 +573,9 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 yt_id = get_youtube_video_id(video_url)
                 clean_yt_url = f"https://www.youtube.com/watch?v={yt_id}" if yt_id else video_url
                 logger.info(f"Processando YouTube via Gemini ({lens_name}): {clean_yt_url}")
-                summary, transcription = await asyncio.to_thread(analyze_youtube_url_direct, clean_yt_url, lens_code)
+                summary, transcription, orig_lang = await asyncio.to_thread(
+                    analyze_youtube_url_direct, clean_yt_url, lens_code, None, True
+                )
 
             # Para Instagram, TikTok e Twitter/X, baixa o arquivo de mídia
             if not summary:
@@ -576,9 +606,9 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 transcription=transcription or "",
             )
 
-            # Guarda no cache em memória
+            # Guarda no cache em memória e no banco persistente
             cache_id = str(uuid.uuid4())[:8]
-            VIDEO_CACHE[cache_id] = {
+            set_cached_video(cache_id, {
                 "summary": summary,
                 "transcription": transcription,
                 "url": video_url,
@@ -587,7 +617,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 "title": title_line,
                 "orig_lang": orig_lang,
                 "time": time.time(),
-            }
+            })
 
             keyboard = [
                 [
@@ -643,7 +673,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     # B) VER TRANSCRIÇÃO COMPLETA
     if data.startswith("tx_"):
         cache_id = data[3:]
-        cached = VIDEO_CACHE.get(cache_id)
+        cached = get_cached_video(cache_id)
         if not cached:
             await query.message.reply_text("⚠️ As informações desse vídeo expiraram do cache.")
             return
@@ -662,7 +692,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     # C) GERAR IDEIAS DE POST
     elif data.startswith("idea_"):
         cache_id = data[5:]
-        cached = VIDEO_CACHE.get(cache_id)
+        cached = get_cached_video(cache_id)
         if not cached:
             await query.message.reply_text("⚠️ As informações desse vídeo expiraram do cache.")
             return
@@ -693,7 +723,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     # E) SALVAR NO NOTION
     elif data.startswith("notion_"):
         cache_id = data[7:]
-        cached = VIDEO_CACHE.get(cache_id)
+        cached = get_cached_video(cache_id)
         if not cached:
             await query.message.reply_text("⚠️ As informações desse vídeo expiraram do cache.")
             return
@@ -716,7 +746,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     # F) SALVAR NO OBSIDIAN
     elif data.startswith("obsidian_"):
         cache_id = data[9:]
-        cached = VIDEO_CACHE.get(cache_id)
+        cached = get_cached_video(cache_id)
         if not cached:
             await query.message.reply_text("⚠️ As informações desse vídeo expiraram do cache.")
             return
@@ -777,7 +807,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     # G) OUVIR RESUMO EM ÁUDIO (NEURAL TTS TELEGRAM)
     elif data.startswith("audio_"):
         cache_id = data[6:]
-        cached = VIDEO_CACHE.get(cache_id)
+        cached = get_cached_video(cache_id)
         if not cached:
             await query.message.reply_text("⚠️ As informações desse vídeo expiraram do cache.")
             return
@@ -816,7 +846,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     # H) AUDITORIA CRÍTICA & ADVOGADO DO DIABO (NVIDIA NEMOTRON REASONING)
     elif data.startswith("critique_"):
         cache_id = data[9:]
-        cached = VIDEO_CACHE.get(cache_id)
+        cached = get_cached_video(cache_id)
         if not cached:
             await query.message.reply_text("⚠️ As informações desse vídeo expiraram do cache.")
             return
@@ -882,7 +912,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     # I) DUBLAGEM MULTI-VOZ EM PORTUGUÊS (DEEPGRAM + VOZES NEURAIS)
     elif data.startswith("dub_"):
         cache_id = data[4:]
-        cached = VIDEO_CACHE.get(cache_id)
+        cached = get_cached_video(cache_id)
         if not cached:
             await query.message.reply_text("⚠️ As informações desse vídeo expiraram do cache.")
             return
@@ -932,7 +962,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     elif data.startswith("li_prep_") or data.startswith("li_regen_"):
         is_regen = data.startswith("li_regen_")
         cache_id = data[len("li_regen_"):] if is_regen else data[len("li_prep_"):]
-        cached = VIDEO_CACHE.get(cache_id)
+        cached = get_cached_video(cache_id)
         if not cached:
             await query.message.reply_text("⚠️ As informações desse vídeo expiraram do cache.")
             return
@@ -1009,7 +1039,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
     elif data.startswith("li_img_"):
         cache_id = data[len("li_img_"):]
-        cached = VIDEO_CACHE.get(cache_id)
+        cached = get_cached_video(cache_id)
         if not cached:
             await query.message.reply_text("⚠️ As informações desse vídeo expiraram do cache.")
             return
@@ -1035,7 +1065,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
     elif data.startswith("li_pub_"):
         cache_id = data[len("li_pub_"):]
-        cached = VIDEO_CACHE.get(cache_id)
+        cached = get_cached_video(cache_id)
         if not cached or not cached.get("linkedin_draft"):
             await query.message.reply_text("⚠️ Rascunho expirado. Clique em '💼 Post LinkedIn' novamente.")
             return
@@ -1053,7 +1083,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
     elif data.startswith("li_cancel_"):
         cache_id = data[len("li_cancel_"):]
-        cached = VIDEO_CACHE.get(cache_id)
+        cached = get_cached_video(cache_id)
         if cached:
             cached.pop("linkedin_draft", None)
         await query.message.edit_text("❌ Publicação no LinkedIn cancelada.")
@@ -1062,7 +1092,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     elif data.startswith("blog_prep_") or data.startswith("blog_regen_"):
         is_regen = data.startswith("blog_regen_")
         cache_id = data[len("blog_regen_"):] if is_regen else data[len("blog_prep_"):]
-        cached = VIDEO_CACHE.get(cache_id)
+        cached = get_cached_video(cache_id)
         if not cached:
             await query.message.reply_text("⚠️ As informações desse vídeo expiraram do cache.")
             return
@@ -1147,7 +1177,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
     elif data.startswith("blog_img_"):
         cache_id = data[len("blog_img_"):]
-        cached = VIDEO_CACHE.get(cache_id)
+        cached = get_cached_video(cache_id)
         if not cached:
             await query.message.reply_text("⚠️ As informações desse vídeo expiraram do cache.")
             return
@@ -1174,7 +1204,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
     elif data.startswith("blog_pub_"):
         cache_id = data[len("blog_pub_"):]
-        cached = VIDEO_CACHE.get(cache_id)
+        cached = get_cached_video(cache_id)
         draft = cached.get("blog_draft") if cached else None
         if not draft:
             await query.message.reply_text("⚠️ Rascunho expirado. Clique em '🌐 Post Blog' novamente.")
@@ -1200,7 +1230,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
     elif data.startswith("blog_cancel_"):
         cache_id = data[len("blog_cancel_"):]
-        cached = VIDEO_CACHE.get(cache_id)
+        cached = get_cached_video(cache_id)
         if cached:
             cached.pop("blog_draft", None)
         await query.message.edit_text("❌ Publicação no Blog cancelada.")
@@ -1208,7 +1238,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     # L) GERAR COMENTÁRIOS DE ENGAJAMENTO PARA A POSTAGEM ORIGINAL
     elif data.startswith("comment_"):
         cache_id = data[len("comment_"):]
-        cached = VIDEO_CACHE.get(cache_id)
+        cached = get_cached_video(cache_id)
         if not cached:
             await query.message.reply_text("⚠️ As informações desse vídeo expiraram do cache.")
             return
@@ -1271,7 +1301,7 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
         await tg_file.download_to_drive(tmp_path)
 
         from services.transcriber import transcribe_with_deepgram
-        plain, diarized = await asyncio.to_thread(transcribe_with_deepgram, tmp_path)
+        plain, diarized, orig_lang = await asyncio.to_thread(transcribe_with_deepgram, tmp_path, True)
 
         if not plain:
             await status_msg.edit_text("❌ Não foi possível transcrever o áudio ou nenhuma fala foi detectada.")
@@ -1294,15 +1324,16 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
         )
 
         cache_id = str(uuid.uuid4())[:8]
-        VIDEO_CACHE[cache_id] = {
+        set_cached_video(cache_id, {
             "summary": diarized,
             "transcription": diarized,
             "url": "",
             "platform": platform,
             "category": category,
             "title": title,
+            "orig_lang": orig_lang,
             "time": time.time(),
-        }
+        })
 
         keyboard = [
             [

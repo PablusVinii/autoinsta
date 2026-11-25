@@ -200,14 +200,18 @@ def get_prompt_for_lens(lens_code: str) -> str:
     """Retorna o prompt especializado para a lente escolhida."""
     return PROMPTS.get(lens_code, PROMPTS["gen"])
 
-def analyze_youtube_url_direct(youtube_url: str, lens: str = "gen", model_name: str = None) -> tuple[str, str]:
+def analyze_youtube_url_direct(youtube_url: str, lens: str = "gen", model_name: str = None, return_lang: bool = False):
     """
     Analisa um vídeo do YouTube passando a URL diretamente para a API do Gemini
     com o prompt ajustado para a lente selecionada.
+    Retorna (summary, transcription) ou (summary, transcription, orig_lang) se return_lang=True.
     """
     model = model_name or config.GEMINI_MODEL
     client = genai.Client(api_key=config.GEMINI_API_KEY)
-    prompt = get_prompt_for_lens(lens)
+    prompt = get_prompt_for_lens(lens) + (
+        "\n\nNo final absoluto da resposta, inclua a linha exata indicando o idioma falado no áudio original "
+        "(código ISO, ex: en, pt, es): [IDIOMA_ORIGINAL: xx]"
+    )
 
     interaction = client.interactions.create(
         model=model,
@@ -225,6 +229,12 @@ def analyze_youtube_url_direct(youtube_url: str, lens: str = "gen", model_name: 
 
     output = interaction.output_text or ""
 
+    orig_lang = ""
+    lang_match = re.search(r"\[IDIOMA_ORIGINAL:\s*([a-zA-Z\-]+)\]", output)
+    if lang_match:
+        orig_lang = lang_match.group(1).strip().lower()
+        output = re.sub(r"\[IDIOMA_ORIGINAL:\s*[a-zA-Z\-]+\]", "", output).strip()
+
     summary = ""
     transcription = ""
 
@@ -240,7 +250,7 @@ def analyze_youtube_url_direct(youtube_url: str, lens: str = "gen", model_name: 
     else:
         transcription = "Transcrição gerada pelo modelo Gemini a partir do YouTube."
 
-    return summary, transcription
+    return (summary, transcription, orig_lang) if return_lang else (summary, transcription)
 
 def analyze_and_summarize_video(file_path: str, lens: str = "gen", model_name: str = None, return_lang: bool = False):
     """

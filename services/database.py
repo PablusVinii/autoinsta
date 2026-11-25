@@ -1,13 +1,67 @@
-import sqlite3
+import json
 import os
-import time
+import sqlite3
+import logging
+
+logger = logging.getLogger(__name__)
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "saved_videos.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+
+try:
+    import psycopg2
+    HAS_PSYCOPG2 = True
+except ImportError:
+    HAS_PSYCOPG2 = False
+
+
+def _use_postgres() -> bool:
+    return bool(DATABASE_URL and HAS_PSYCOPG2)
+
+
+def _get_conn():
+    if _use_postgres():
+        return psycopg2.connect(DATABASE_URL)
+    return sqlite3.connect(DB_PATH)
+
+
+def _ph() -> str:
+    return "%s" if _use_postgres() else "?"
+
 
 def init_db():
-    """Inicializa a tabela de vídeos salvos e migra novas colunas se necessário."""
-    conn = sqlite3.connect(DB_PATH)
+    """Inicializa as tabelas (saved_videos e video_cache) em Postgres ou SQLite."""
+    conn = _get_conn()
     cursor = conn.cursor()
+
+    if _use_postgres():
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS saved_videos (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT,
+                title TEXT,
+                category TEXT,
+                platform TEXT,
+                url TEXT,
+                summary TEXT,
+                transcription TEXT DEFAULT '',
+                obsidian_content TEXT DEFAULT '',
+                wikilinks TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS video_cache (
+                cache_id TEXT PRIMARY KEY,
+                payload_json TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+        conn.close()
+        logger.info("[Database] PostgreSQL conectado e inicializado.")
+        return
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS saved_videos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -23,9 +77,16 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS video_cache (
+            cache_id TEXT PRIMARY KEY,
+            payload_json TEXT NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     conn.commit()
 
-    # Migração segura para bancos existentes
+    # Migração segura para bancos SQLite existentes
     cursor.execute("PRAGMA table_info(saved_videos)")
     columns = [row[1] for row in cursor.fetchall()]
 
@@ -39,6 +100,53 @@ def init_db():
     conn.commit()
     conn.close()
 
+
+def save_cache_entry(cache_id: str, data: dict):
+    """Persiste os dados do card no banco para sobreviver a reinícios do servidor."""
+    if not cache_id or not isinstance(data, dict):
+        return
+    # Remove bytes pesados antes de serializar em JSON
+    clean_data = {k: v for k, v in data.items() if k != "cover_bytes"}
+    payload_json = json.dumps(clean_data, ensure_ascii=False)
+
+    conn = _get_conn()
+    cursor = conn.cursor()
+    p = _ph()
+    if _use_postgres():
+        cursor.execute(f"""
+            INSERT INTO video_cache (cache_id, payload_json, updated_at)
+            VALUES ({p}, {p}, CURRENT_TIMESTAMP)
+            ON CONFLICT (cache_id) DO UPDATE SET
+                payload_json = EXCLUDED.payload_json,
+                updated_at = CURRENT_TIMESTAMP
+        """, (cache_id, payload_json))
+    else:
+        cursor.execute(f"""
+            INSERT OR REPLACE INTO video_cache (cache_id, payload_json, updated_at)
+            VALUES ({p}, {p}, CURRENT_TIMESTAMP)
+        """, (cache_id, payload_json))
+    conn.commit()
+    conn.close()
+
+
+def get_cache_entry(cache_id: str) -> dict | None:
+    """Recupera os dados do card do banco caso não estejam mais na RAM."""
+    if not cache_id:
+        return None
+    conn = _get_conn()
+    cursor = conn.cursor()
+    p = _ph()
+    cursor.execute(f"SELECT payload_json FROM video_cache WHERE cache_id = {p}", (cache_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    try:
+        return json.loads(row[0])
+    except Exception:
+        return None
+
+
 def save_video(
     user_id: int,
     title: str,
@@ -51,39 +159,52 @@ def save_video(
     wikilinks: str = ""
 ) -> int:
     """Salva um vídeo processado na base de dados pessoal."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO saved_videos (user_id, title, category, platform, url, summary, transcription, obsidian_content, wikilinks)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (user_id, title, category, platform, url, summary, transcription, obsidian_content, wikilinks))
-    row_id = cursor.lastrowid
+    p = _ph()
+    if _use_postgres():
+        cursor.execute(f"""
+            INSERT INTO saved_videos (user_id, title, category, platform, url, summary, transcription, obsidian_content, wikilinks)
+            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+            RETURNING id
+        """, (user_id, title, category, platform, url, summary, transcription, obsidian_content, wikilinks))
+        row_id = cursor.fetchone()[0]
+    else:
+        cursor.execute(f"""
+            INSERT INTO saved_videos (user_id, title, category, platform, url, summary, transcription, obsidian_content, wikilinks)
+            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+        """, (user_id, title, category, platform, url, summary, transcription, obsidian_content, wikilinks))
+        row_id = cursor.lastrowid
     conn.commit()
     conn.close()
     return row_id
 
+
 def update_obsidian_data(user_id: int, url: str, obsidian_content: str, wikilinks: str):
     """Atualiza o conteúdo Markdown formatado e wikilinks da nota salva."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     cursor = conn.cursor()
-    cursor.execute("""
+    p = _ph()
+    cursor.execute(f"""
         UPDATE saved_videos
-        SET obsidian_content = ?, wikilinks = ?
-        WHERE user_id = ? AND url = ?
+        SET obsidian_content = {p}, wikilinks = {p}
+        WHERE user_id = {p} AND url = {p}
     """, (obsidian_content, wikilinks, user_id, url))
     conn.commit()
     conn.close()
 
+
 def get_user_videos(user_id: int, limit: int = 10) -> list[dict]:
     """Retorna os últimos vídeos salvos pelo usuário."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     cursor = conn.cursor()
-    cursor.execute("""
+    p = _ph()
+    cursor.execute(f"""
         SELECT id, title, category, platform, url, summary, wikilinks, created_at
         FROM saved_videos
-        WHERE user_id = ?
+        WHERE user_id = {p}
         ORDER BY id DESC
-        LIMIT ?
+        LIMIT {p}
     """, (user_id, limit))
     rows = cursor.fetchall()
     conn.close()
@@ -97,21 +218,23 @@ def get_user_videos(user_id: int, limit: int = 10) -> list[dict]:
             "url": r[4],
             "summary": r[5],
             "wikilinks": r[6],
-            "created_at": r[7],
+            "created_at": str(r[7]),
         }
         for r in rows
     ]
 
+
 def get_obsidian_notes(user_id: int, limit: int = 10) -> list[dict]:
     """Retorna as notas formatadas para o Obsidian ou salvas no cofre."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     cursor = conn.cursor()
-    cursor.execute("""
+    p = _ph()
+    cursor.execute(f"""
         SELECT id, title, category, platform, url, wikilinks, obsidian_content, created_at
         FROM saved_videos
-        WHERE user_id = ?
+        WHERE user_id = {p}
         ORDER BY id DESC
-        LIMIT ?
+        LIMIT {p}
     """, (user_id, limit))
     rows = cursor.fetchall()
     conn.close()
@@ -125,10 +248,11 @@ def get_obsidian_notes(user_id: int, limit: int = 10) -> list[dict]:
             "url": r[4],
             "wikilinks": r[5],
             "obsidian_content": r[6],
-            "created_at": r[7],
+            "created_at": str(r[7]),
         }
         for r in rows
     ]
+
 
 def search_saved_videos(user_id: int, query: str, limit: int = 8) -> list[dict]:
     """
@@ -138,15 +262,17 @@ def search_saved_videos(user_id: int, query: str, limit: int = 8) -> list[dict]:
     if not terms:
         terms = [query.strip()]
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     cursor = conn.cursor()
+    p = _ph()
+    op = "ILIKE" if _use_postgres() else "LIKE"
 
     conditions = []
     params = [user_id]
     for term in terms:
         wildcard = f"%{term}%"
-        conditions.append("""
-            (title LIKE ? OR category LIKE ? OR summary LIKE ? OR transcription LIKE ? OR wikilinks LIKE ?)
+        conditions.append(f"""
+            (title {op} {p} OR category {op} {p} OR summary {op} {p} OR transcription {op} {p} OR wikilinks {op} {p})
         """)
         params.extend([wildcard, wildcard, wildcard, wildcard, wildcard])
 
@@ -156,9 +282,9 @@ def search_saved_videos(user_id: int, query: str, limit: int = 8) -> list[dict]:
     cursor.execute(f"""
         SELECT id, title, category, platform, url, summary, wikilinks, created_at
         FROM saved_videos
-        WHERE user_id = ? AND ({where_clause})
+        WHERE user_id = {p} AND ({where_clause})
         ORDER BY id DESC
-        LIMIT ?
+        LIMIT {p}
     """, params)
     rows = cursor.fetchall()
     conn.close()
@@ -172,21 +298,23 @@ def search_saved_videos(user_id: int, query: str, limit: int = 8) -> list[dict]:
             "url": r[4],
             "summary": r[5],
             "wikilinks": r[6],
-            "created_at": r[7],
+            "created_at": str(r[7]),
         }
         for r in rows
     ]
 
+
 def get_all_notes_for_synthesis(user_id: int, limit: int = 25) -> list[dict]:
     """Retorna um lote de notas para a IA sintetizar conhecimento cruzado."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     cursor = conn.cursor()
-    cursor.execute("""
+    p = _ph()
+    cursor.execute(f"""
         SELECT title, category, platform, summary, wikilinks, created_at
         FROM saved_videos
-        WHERE user_id = ?
+        WHERE user_id = {p}
         ORDER BY id DESC
-        LIMIT ?
+        LIMIT {p}
     """, (user_id, limit))
     rows = cursor.fetchall()
     conn.close()
@@ -198,9 +326,7 @@ def get_all_notes_for_synthesis(user_id: int, limit: int = 25) -> list[dict]:
             "platform": r[2],
             "summary": r[3],
             "wikilinks": r[4],
-            "created_at": r[5],
+            "created_at": str(r[5]),
         }
         for r in rows
     ]
-
-init_db()
