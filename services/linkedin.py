@@ -1,8 +1,8 @@
 import logging
 import re
 import requests
-from google import genai
 import config
+from services.nvidia import generate_text_smart
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,6 @@ def generate_linkedin_post(
     Transforma o resumo/transcrição analisado em um post otimizado para o LinkedIn
     (sem Markdown cru, com gancho forte, escaneabilidade e hashtags).
     """
-    client = genai.Client(api_key=config.GEMINI_API_KEY)
     tone_desc = ANGLES.get(angle, ANGLES["executivo"])
 
     prompt = f"""
@@ -82,11 +81,7 @@ REGRAS ESTRITAS DE FORMATAÇÃO E AUTORIA PARA O LINKEDIN:
 7. Tamanho ideal: Entre 700 e 1.500 caracteres (máximo absoluto de 2.500 caracteres).
 8. NÃO inclua links externos no corpo do post e NÃO coloque introduções como "Aqui está o post:". Entregue APENAS o texto final pronto para publicação.
 """
-    interaction = client.interactions.create(
-        model=config.GEMINI_MODEL,
-        input=prompt,
-    )
-    post_text = (interaction.output_text or "").strip()
+    post_text = generate_text_smart(prompt)
     # Garantia extra: remove eventuais asteriscos ou crases residuais de Markdown
     post_text = re.sub(r"\*\*(.*?)\*\*", r"\1", post_text)
     post_text = post_text.replace("`", "")

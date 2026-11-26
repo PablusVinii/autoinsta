@@ -3,6 +3,7 @@ import re
 import logging
 from google import genai
 import config
+from services.nvidia import generate_text_smart, is_gemini_blocked, mark_gemini_blocked
 
 logger = logging.getLogger(__name__)
 
@@ -200,36 +201,74 @@ def get_prompt_for_lens(lens_code: str) -> str:
     """Retorna o prompt especializado para a lente escolhida."""
     return PROMPTS.get(lens_code, PROMPTS["gen"])
 
+def _extract_yt_transcript_fallback(youtube_url: str) -> tuple[str, str]:
+    """Extrai legendas do YouTube via youtube-transcript-api quando o Gemini estiver sem cota."""
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        m = re.search(r"(?:v=|youtu\.be/|shorts/)([a-zA-Z0-9_-]{11})", youtube_url)
+        if not m:
+            return "", ""
+        vid = m.group(1)
+        api = YouTubeTranscriptApi()
+        transcript_list = api.list(vid)
+        chosen = None
+        for lang_code in ("pt", "pt-BR", "en", "es"):
+            try:
+                chosen = transcript_list.find_transcript([lang_code])
+                break
+            except Exception:
+                continue
+        if not chosen:
+            chosen = next(iter(transcript_list), None)
+        if not chosen:
+            return "", ""
+        entries = chosen.fetch()
+        text = " ".join(getattr(e, "text", e.get("text", "") if isinstance(e, dict) else "") for e in entries)
+        return text.strip(), (getattr(chosen, "language_code", "") or "").lower()
+    except Exception as e:
+        logger.warning(f"[YouTube Fallback] Falha ao extrair legenda: {e}")
+        return "", ""
+
+
 def analyze_youtube_url_direct(youtube_url: str, lens: str = "gen", model_name: str = None, return_lang: bool = False):
     """
-    Analisa um vídeo do YouTube passando a URL diretamente para a API do Gemini
-    com o prompt ajustado para a lente selecionada.
-    Retorna (summary, transcription) ou (summary, transcription, orig_lang) se return_lang=True.
+    Analisa um vídeo do YouTube via Gemini; se Gemini atingir cota/gasto, extrai legenda
+    e analisa automaticamente com NVIDIA NIM.
     """
     model = model_name or config.GEMINI_MODEL
-    client = genai.Client(api_key=config.GEMINI_API_KEY)
     prompt = get_prompt_for_lens(lens) + (
         "\n\nNo final absoluto da resposta, inclua a linha exata indicando o idioma falado no áudio original "
         "(código ISO, ex: en, pt, es): [IDIOMA_ORIGINAL: xx]"
     )
 
-    interaction = client.interactions.create(
-        model=model,
-        input=[
-            {
-                "type": "video",
-                "uri": youtube_url
-            },
-            {
-                "type": "text",
-                "text": prompt
-            }
-        ]
-    )
+    output = ""
+    yt_fallback_lang = ""
 
-    output = interaction.output_text or ""
+    if config.GEMINI_API_KEY and not is_gemini_blocked():
+        try:
+            client = genai.Client(api_key=config.GEMINI_API_KEY)
+            interaction = client.interactions.create(
+                model=model,
+                input=[
+                    {"type": "video", "uri": youtube_url},
+                    {"type": "text", "text": prompt},
+                ],
+            )
+            output = interaction.output_text or ""
+        except Exception as e:
+            err_lower = str(e).lower()
+            if any(k in err_lower for k in ["429", "403", "quota", "limit", "spending", "billing", "exceeded"]):
+                mark_gemini_blocked(900)
+            logger.warning(f"[YouTube] Gemini falhou ({e}). Acionando fallback NVIDIA NIM...")
 
-    orig_lang = ""
+    if not output:
+        yt_text, yt_fallback_lang = _extract_yt_transcript_fallback(youtube_url)
+        if not yt_text:
+            raise RuntimeError("Não foi possível analisar o YouTube: Gemini sem cota e vídeo sem legenda disponível.")
+        nvidia_prompt = f"{prompt}\n\n[TRANSCRIÇÃO DO VÍDEO NO YOUTUBE]:\n{yt_text[:20000]}"
+        output = generate_text_smart(nvidia_prompt, max_tokens=2048)
+
+    orig_lang = yt_fallback_lang
     lang_match = re.search(r"\[IDIOMA_ORIGINAL:\s*([a-zA-Z\-]+)\]", output)
     if lang_match:
         orig_lang = lang_match.group(1).strip().lower()
@@ -248,14 +287,14 @@ def analyze_youtube_url_direct(youtube_url: str, lens: str = "gen", model_name: 
     if transcription_match:
         transcription = transcription_match.group(1).strip()
     else:
-        transcription = "Transcrição gerada pelo modelo Gemini a partir do YouTube."
+        transcription = "Transcrição gerada a partir do YouTube."
 
     return (summary, transcription, orig_lang) if return_lang else (summary, transcription)
 
 def analyze_and_summarize_video(file_path: str, lens: str = "gen", model_name: str = None, return_lang: bool = False):
     """
     Transcreve com Deepgram Nova-3 (com Diarização de locutores e isolamento de música)
-    e analisa na API do Gemini utilizando a lente temática selecionada.
+    e analisa no Gemini — com fallback automático para NVIDIA NIM caso o Gemini atinja o limite.
     """
     from services.transcriber import transcribe_with_deepgram
 
@@ -267,7 +306,6 @@ def analyze_and_summarize_video(file_path: str, lens: str = "gen", model_name: s
         logger.warning(f"[Transcriber] Aviso ao transcrever com Deepgram: {e}")
 
     model = model_name or config.GEMINI_MODEL
-    client = genai.Client(api_key=config.GEMINI_API_KEY)
     prompt = get_prompt_for_lens(lens)
 
     if dg_diarized:
@@ -277,75 +315,79 @@ def analyze_and_summarize_video(file_path: str, lens: str = "gen", model_name: s
             f"Instrução Adicional: Use a transcrição acima para atribuir precisamente argumentos aos seus respectivos locutores."
         )
 
-    myfile = client.files.upload(file=file_path)
-
-    try:
-        max_attempts = 30
-        attempts = 0
-        while attempts < max_attempts:
-            if myfile.state and myfile.state.name == "ACTIVE":
-                break
-            if myfile.state and myfile.state.name == "FAILED":
-                raise RuntimeError("Falha ao processar o arquivo na API do Gemini.")
-            time.sleep(2)
-            myfile = client.files.get(name=myfile.name)
-            attempts += 1
-
-        mime = myfile.mime_type or "video/mp4"
-        media_type = "video"
-        if mime.startswith("audio/") or file_path.lower().endswith((".m4a", ".mp3", ".wav", ".aac", ".ogg")):
-            media_type = "audio"
-            if not mime.startswith("audio/"):
-                mime = "audio/mp4"
-
-        interaction = client.interactions.create(
-            model=model,
-            input=[
-                {
-                    "type": media_type,
-                    "uri": myfile.uri,
-                    "mime_type": mime
-                },
-                {
-                    "type": "text",
-                    "text": prompt
-                }
-            ]
-        )
-
-        output = interaction.output_text or ""
-
-        summary = ""
-        transcription = ""
-
-        summary_match = re.search(r"\[INICIO_RESUMO\](.*?)\[FIM_RESUMO\]", output, re.DOTALL)
-        if summary_match:
-            summary = summary_match.group(1).strip()
-        else:
-            summary = output.strip()
-
-        # Prioriza a transcrição diarizada e cristalina do Deepgram Nova-3
-        if dg_diarized:
-            transcription = dg_diarized
-        else:
-            transcription_match = re.search(r"\[INICIO_TRANSCRICAO\](.*?)\[FIM_TRANSCRICAO\]", output, re.DOTALL)
-            if transcription_match:
-                transcription = transcription_match.group(1).strip()
-            else:
-                transcription = "Transcrição não disponível separadamente."
-
-        return (summary, transcription, dg_lang) if return_lang else (summary, transcription)
-
-    finally:
+    output = ""
+    if config.GEMINI_API_KEY and not is_gemini_blocked():
+        client = genai.Client(api_key=config.GEMINI_API_KEY)
+        myfile = None
         try:
-            if myfile and myfile.name:
-                client.files.delete(name=myfile.name)
+            myfile = client.files.upload(file=file_path)
+            max_attempts = 30
+            attempts = 0
+            while attempts < max_attempts:
+                if myfile.state and myfile.state.name == "ACTIVE":
+                    break
+                if myfile.state and myfile.state.name == "FAILED":
+                    raise RuntimeError("Falha ao processar o arquivo na API do Gemini.")
+                time.sleep(2)
+                myfile = client.files.get(name=myfile.name)
+                attempts += 1
+
+            mime = myfile.mime_type or "video/mp4"
+            media_type = "video"
+            if mime.startswith("audio/") or file_path.lower().endswith((".m4a", ".mp3", ".wav", ".aac", ".ogg")):
+                media_type = "audio"
+                if not mime.startswith("audio/"):
+                    mime = "audio/mp4"
+
+            interaction = client.interactions.create(
+                model=model,
+                input=[
+                    {"type": media_type, "uri": myfile.uri, "mime_type": mime},
+                    {"type": "text", "text": prompt},
+                ],
+            )
+            output = interaction.output_text or ""
         except Exception as e:
-            print(f"[Gemini Cleanup] Aviso ao deletar arquivo remoto: {e}")
+            err_lower = str(e).lower()
+            if any(k in err_lower for k in ["429", "403", "quota", "limit", "spending", "billing", "exceeded"]):
+                mark_gemini_blocked(900)
+            logger.warning(f"[Summarizer] Gemini indisponível ({e}). Usando Deepgram + NVIDIA NIM...")
+        finally:
+            try:
+                if myfile and myfile.name:
+                    client.files.delete(name=myfile.name)
+            except Exception as e:
+                print(f"[Gemini Cleanup] Aviso ao deletar arquivo remoto: {e}")
+
+    # Fallback imediato: Deepgram Nova-3 já transcreveu o áudio -> NVIDIA NIM analisa e resume!
+    if not output:
+        if not dg_diarized:
+            raise RuntimeError("Gemini sem cota e o áudio não pôde ser transcrito pelo Deepgram.")
+        output = generate_text_smart(prompt, max_tokens=2048)
+
+    summary = ""
+    transcription = ""
+
+    summary_match = re.search(r"\[INICIO_RESUMO\](.*?)\[FIM_RESUMO\]", output, re.DOTALL)
+    if summary_match:
+        summary = summary_match.group(1).strip()
+    else:
+        summary = output.strip()
+
+    # Prioriza a transcrição diarizada e cristalina do Deepgram Nova-3
+    if dg_diarized:
+        transcription = dg_diarized
+    else:
+        transcription_match = re.search(r"\[INICIO_TRANSCRICAO\](.*?)\[FIM_TRANSCRICAO\]", output, re.DOTALL)
+        if transcription_match:
+            transcription = transcription_match.group(1).strip()
+        else:
+            transcription = "Transcrição não disponível separadamente."
+
+    return (summary, transcription, dg_lang) if return_lang else (summary, transcription)
 
 def generate_content_ideas(summary_text: str) -> str:
     """Gera ideias de posts e ganchos virais a partir do resumo."""
-    client = genai.Client(api_key=config.GEMINI_API_KEY)
     prompt = f"""
 Com base no resumo deste conteúdo:
 \"\"\"
@@ -369,15 +411,10 @@ Crie um kit prático de ideias de conteúdo para redes sociais no seguinte forma
 
 Responda em Português do Brasil com formatação elegante para Telegram.
 """
-    interaction = client.interactions.create(
-        model=config.GEMINI_MODEL,
-        input=prompt
-    )
-    return interaction.output_text or "Não foi possível gerar as ideias no momento."
+    return generate_text_smart(prompt) or "Não foi possível gerar as ideias no momento."
 
 def answer_video_question(summary_text: str, transcription_text: str, question: str) -> str:
     """Responde a perguntas específicas de Q&A do usuário com base no vídeo."""
-    client = genai.Client(api_key=config.GEMINI_API_KEY)
     prompt = f"""
 Você é o assistente que assistiu e analisou o vídeo a seguir.
 O usuário está fazendo uma pergunta específica sobre o conteúdo do vídeo.
@@ -397,11 +434,7 @@ Instruções:
 - Se o vídeo não mencionar a resposta, diga com honestidade que o autor não abordou esse ponto no vídeo.
 - Responda em Português do Brasil com formatação elegante para Telegram.
 """
-    interaction = client.interactions.create(
-        model=config.GEMINI_MODEL,
-        input=prompt
-    )
-    return interaction.output_text or "Não consegui formular uma resposta para essa pergunta."
+    return generate_text_smart(prompt) or "Não consegui formular uma resposta para essa pergunta."
 
 
 def generate_engaging_comments(
@@ -415,7 +448,6 @@ def generate_engaging_comments(
     Se o conteúdo original for em inglês (ou outro idioma estrangeiro), gera em inglês + tradução pt-BR.
     Se for em português, gera apenas em pt-BR.
     """
-    client = genai.Client(api_key=config.GEMINI_API_KEY)
     lang_clean = (orig_lang or "").strip().lower()
     is_foreign = bool(lang_clean) and not lang_clean.startswith("pt")
 
@@ -462,8 +494,4 @@ REGRAS CRÍTICAS PARA OS COMENTÁRIOS:
 
 {lang_instruction}
 """
-    interaction = client.interactions.create(
-        model=config.GEMINI_MODEL,
-        input=prompt,
-    )
-    return interaction.output_text or "Não foi possível gerar os comentários no momento."
+    return generate_text_smart(prompt) or "Não foi possível gerar os comentários no momento."

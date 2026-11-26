@@ -2,6 +2,7 @@ import base64
 import logging
 from google import genai
 import config
+from services.nvidia import generate_text_smart, is_gemini_blocked, mark_gemini_blocked
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,6 @@ def generate_disruptive_cover(
     Gera uma imagem de capa disruptiva e chamativa em PNG (bytes) relacionada ao tema.
     Usa Gemini para criar o conceito visual metafórico + gemini-2.5-flash-image para sintetizar.
     """
-    client_text = genai.Client(api_key=config.GEMINI_API_KEY)
     dir_prompt = VISUAL_DIRECTOR_PROMPT.format(
         title=title,
         summary=summary[:1200],
@@ -40,11 +40,12 @@ def generate_disruptive_cover(
     if variation_hint:
         dir_prompt += f"\nCreative twist: {variation_hint}"
 
-    concept_res = client_text.interactions.create(
-        model=config.GEMINI_MODEL,
-        input=dir_prompt,
-    )
-    image_prompt = (concept_res.output_text or "").strip()
+    image_prompt = ""
+    try:
+        image_prompt = generate_text_smart(dir_prompt, max_tokens=512)
+    except Exception:
+        image_prompt = ""
+
     if not image_prompt:
         image_prompt = (
             f"Disruptive editorial 3D tech art representing {title}, "
@@ -53,6 +54,9 @@ def generate_disruptive_cover(
         )
     else:
         image_prompt += " Wide 16:9 composition, ultra-sharp editorial lighting, no text, no words, no letters."
+
+    if is_gemini_blocked():
+        raise RuntimeError("Geração de imagem indisponível enquanto a API do Gemini estiver no limite de cota.")
 
     logger.info(f"[Visuals] Gerando capa com prompt: {image_prompt[:140]}...")
 
@@ -74,6 +78,10 @@ def generate_disruptive_cover(
                 logger.info(f"[Visuals] Capa gerada com {img_model} ({len(raw_bytes)} bytes).")
                 return raw_bytes
         except Exception as e:
+            err_lower = str(e).lower()
+            if any(k in err_lower for k in ["429", "403", "quota", "limit", "spending", "billing", "exceeded"]):
+                mark_gemini_blocked(900)
+                break
             logger.warning(f"[Visuals] Falha com {img_model}: {e}")
 
     raise RuntimeError("Não foi possível gerar a imagem de capa no momento.")

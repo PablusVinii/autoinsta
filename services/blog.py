@@ -5,8 +5,8 @@ import re
 import unicodedata
 from datetime import datetime
 import requests
-from google import genai
 import config
+from services.nvidia import generate_text_smart
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,6 @@ def generate_blog_article(
     Gera um artigo completo em Markdown para o blog no GitHub Pages.
     Retorna (article_title, excerpt, markdown_body).
     """
-    client = genai.Client(api_key=config.GEMINI_API_KEY)
     tone_desc = BLOG_ANGLES.get(angle, BLOG_ANGLES["executivo"])
 
     prompt = f"""
@@ -91,11 +90,7 @@ REGRAS CRÍTICAS:
 (Artigo em Markdown limpo: introdução direta, 2 a 3 subtítulos ##, listas com -, um destaque em blockquote > e conclusão prática. Entre 400 e 900 palavras. NÃO repita o título principal no topo do corpo.)
 [FIM_ARTIGO]
 """
-    interaction = client.interactions.create(
-        model=config.GEMINI_MODEL,
-        input=prompt,
-    )
-    raw = (interaction.output_text or "").strip()
+    raw = generate_text_smart(prompt)
 
     t_match = re.search(r"\[TITULO\](.*?)\[FIM_TITULO\]", raw, re.DOTALL)
     e_match = re.search(r"\[RESUMO_CURTO\](.*?)\[FIM_RESUMO_CURTO\]", raw, re.DOTALL)

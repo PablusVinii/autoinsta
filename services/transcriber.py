@@ -106,14 +106,8 @@ def translate_to_portuguese(text: str) -> str:
         f"Texto original:\n{text}"
     )
     try:
-        from google import genai
-        import config
-        client = genai.Client(api_key=config.GEMINI_API_KEY)
-        res = client.interactions.create(
-            model=config.GEMINI_MODEL,
-            input=prompt
-        )
-        translated = res.output_text.strip()
+        from services.nvidia import generate_text_smart
+        translated = generate_text_smart(prompt, max_tokens=3072)
         return translated if translated else text
     except Exception as e:
         logger.error(f"[Transcriber Translator] Erro ao traduzir: {e}")

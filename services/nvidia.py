@@ -1,11 +1,13 @@
 import os
 import re
 import math
+import time
 import asyncio
 import tempfile
 import requests
 import logging
 import edge_tts
+from google import genai
 import config
 
 logger = logging.getLogger(__name__)
@@ -14,6 +16,77 @@ NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
 EMBEDDING_MODEL = "nvidia/nemotron-3.5-embed-1b"
 REASONING_MODEL = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
 FAST_MODEL = "nvidia/nemotron-3.5-bolt-e4b"
+
+_GEMINI_COOLDOWN_UNTIL = 0.0
+
+
+def is_gemini_blocked() -> bool:
+    """Retorna True se Gemini atingiu limite de cota/gasto recentemente ou se LLM_PROVIDER=nvidia."""
+    if os.getenv("LLM_PROVIDER", "").strip().lower() == "nvidia":
+        return True
+    return time.time() < _GEMINI_COOLDOWN_UNTIL
+
+
+def mark_gemini_blocked(seconds: int = 900):
+    global _GEMINI_COOLDOWN_UNTIL
+    _GEMINI_COOLDOWN_UNTIL = time.time() + seconds
+
+
+def generate_text_nvidia(prompt: str, max_tokens: int = 2048, temperature: float = 0.6) -> str:
+    """Gera texto usando NVIDIA NIM (Nemotron Bolt -> Nemotron Reasoning fallback)."""
+    key = config.NVIDIA_API_KEY or os.getenv("NVIDIA_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("NVIDIA_API_KEY não configurada.")
+
+    headers = get_headers()
+    url = f"{NVIDIA_BASE_URL}/chat/completions"
+
+    for model in (FAST_MODEL, REASONING_MODEL):
+        try:
+            payload = {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            }
+            res = requests.post(url, headers=headers, json=payload, timeout=45)
+            if res.status_code == 200:
+                msg = res.json().get("choices", [{}])[0].get("message", {})
+                content = (msg.get("content") or "").strip()
+                if content:
+                    return content
+            else:
+                logger.warning(f"[NVIDIA LLM] {model} retornou {res.status_code}: {res.text[:150]}")
+        except Exception as e:
+            logger.warning(f"[NVIDIA LLM] Erro em {model}: {e}")
+
+    raise RuntimeError("Falha ao gerar texto via NVIDIA NIM.")
+
+
+def generate_text_smart(prompt: str, max_tokens: int = 2048) -> str:
+    """
+    Roteador inteligente: tenta Gemini quando disponível; se atingir cota/gasto
+    ou estiver bloqueado, faz fallback automático para NVIDIA NIM.
+    """
+    if config.GEMINI_API_KEY and not is_gemini_blocked():
+        try:
+            client = genai.Client(api_key=config.GEMINI_API_KEY)
+            interaction = client.interactions.create(
+                model=config.GEMINI_MODEL,
+                input=prompt,
+            )
+            text = (interaction.output_text or "").strip()
+            if text:
+                return text
+        except Exception as e:
+            err_lower = str(e).lower()
+            if any(k in err_lower for k in ["429", "403", "quota", "limit", "spending", "billing", "exceeded", "resource_exhausted"]):
+                logger.warning(f"[LLM Router] Gemini bloqueado/sem cota ({e}). Ativando NVIDIA NIM...")
+                mark_gemini_blocked(900)
+            else:
+                logger.warning(f"[LLM Router] Erro no Gemini ({e}). Tentando NVIDIA NIM...")
+
+    return generate_text_nvidia(prompt, max_tokens=max_tokens)
 
 def get_headers():
     key = config.NVIDIA_API_KEY or os.getenv("NVIDIA_API_KEY", "").strip()

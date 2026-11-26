@@ -58,9 +58,9 @@ def parse_summary_sections(text: str) -> dict:
     return sections
 
 def categorize_content(summary_text: str) -> str:
-    """Classifica o conteúdo do vídeo em uma categoria concisa com Gemini."""
+    """Classifica o conteúdo do vídeo em uma categoria concisa."""
     try:
-        client = genai.Client(api_key=config.GEMINI_API_KEY)
+        from services.nvidia import generate_text_smart
         prompt = f"""
 Com base no resumo abaixo, escolha a categoria que melhor define o conteúdo:
 Categorias possíveis: IA & Tecnologia, Marketing & Negócios, Finanças & Investimentos, Produtividade, Carreira & Vendas, Desenvolvimento Pessoal, Saúde & Fitness, Culinária, Entretenimento, Outros.
@@ -70,11 +70,7 @@ Responda APENAS com o nome da categoria exata (uma palavra ou frase curta):
 {summary_text[:1000]}
 \"\"\"
 """
-        interaction = client.interactions.create(
-            model=config.GEMINI_MODEL,
-            input=prompt
-        )
-        cat = interaction.output_text.strip().replace('"', '').replace("'", "")
+        cat = generate_text_smart(prompt, max_tokens=64).replace('"', '').replace("'", "")
         return cat if cat else "Geral"
     except Exception:
         return "Geral"

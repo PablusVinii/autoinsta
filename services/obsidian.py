@@ -45,7 +45,7 @@ Resumo a ser formatado:
 def generate_obsidian_content(summary: str, transcription: str, title: str, category: str, platform: str, url: str) -> str:
     """Usa o Gemini para gerar o Markdown enriquecido com [[Wikilinks]] e frontmatter YAML."""
     try:
-        client = genai.Client(api_key=config.GEMINI_API_KEY)
+        from services.nvidia import generate_text_smart
         prompt = OBSIDIAN_PROMPT.format(
             platform=platform,
             category=category,
@@ -56,11 +56,7 @@ def generate_obsidian_content(summary: str, transcription: str, title: str, cate
             tag2=platform.lower(),
             tag3="segundo-cerebro"
         )
-        interaction = client.interactions.create(
-            model=config.GEMINI_MODEL,
-            input=prompt
-        )
-        md_text = interaction.output_text.strip()
+        md_text = generate_text_smart(prompt, max_tokens=2048)
         # Remove eventuais fences de markdown se a IA colocar
         if md_text.startswith("```markdown"):
             md_text = md_text[len("```markdown"):].strip()
@@ -261,12 +257,8 @@ def synthesize_vault_knowledge(query: str, notes: list[dict]) -> str:
     )
 
     try:
-        client = genai.Client(api_key=config.GEMINI_API_KEY)
-        interaction = client.interactions.create(
-            model=config.GEMINI_MODEL,
-            input=prompt
-        )
-        return interaction.output_text.strip()
+        from services.nvidia import generate_text_smart
+        return generate_text_smart(prompt, max_tokens=2500)
     except Exception as e:
-        print(f"[Obsidian Synthesis] Erro na síntese com Gemini: {e}")
+        print(f"[Obsidian Synthesis] Erro na síntese: {e}")
         return f"❌ Erro ao consultar o Segundo Cérebro: {e}"
