@@ -505,9 +505,8 @@ def generate_bilingual_study(
     orig_lang: str = "",
 ) -> str:
     """
-    Gera um roteiro bilíngue frase por frase para estudo de inglês:
-    Linha 1: Frase original em inglês
-    Linha 2: Tradução natural em português logo abaixo
+    Gera o texto para estudo de inglês separando cada palavra ou expressão em inglês
+    com seu significado em português logo ao lado/abaixo entre parênteses.
     """
     source_text = (orig_transcription or transcription_text or "").strip()
     if not source_text or len(source_text) < 10:
@@ -518,20 +517,22 @@ Você é um professor particular de inglês prático para brasileiros.
 Abaixo está a transcrição de um vídeo ({orig_lang or 'inglês/português'}).
 
 TAREFA:
-Divida TODA a fala em frases ou blocos curtos de legenda (no máximo 1 frase por bloco) e entregue EXATAMENTE no formato bilíngue abaixo — **Inglês na linha de cima** e **Português do Brasil natural na linha de baixo**, separados por uma linha em branco entre cada bloco.
+Reescreva TODA a fala do vídeo frase por frase (uma linha em branco entre cada frase), separando cada palavra ou expressão em inglês com seu significado exato em português entre parênteses, conectados por ` · `.
+NÃO coloque a frase inteira em inglês nem a frase inteira em português antes — entregue APENAS nesse formato de mapeamento direto.
+
+COMO AGRUPAR PALAVRAS (REGRA CRÍTICA):
+- Quando 2 ou mais palavras em inglês formam um único sentido em português, mantenha juntas: ex: `There is (Tem)`, `give up (desistir)`, `under pressure (sob pressão)`, `right now (agora)`.
+- Quando 1 palavra em inglês vira 2 ou mais palavras em português, traduza o sentido completo nos parênteses: ex: `shouldn't (não deveria)`, `actually (na verdade)`, `hesitate (ficar em dúvida / hesitar)`.
 
 EXEMPLO EXATO DO FORMATO:
-There is an idea in psychology
-Tem uma ideia na psicologia
+There is (Tem) · an (uma) · idea (ideia) · in (na) · psychology (psicologia).
 
-And it explains why most people hesitate
-E isso explica por que a maioria das pessoas hesita
+You (Você) · shouldn't (não deveria) · give up (desistir) · under pressure (sob pressão).
 
 REGRAS OBRIGATÓRIAS:
-1. Se o texto abaixo já estiver traduzido para português (sem o inglês original), reconstrua o inglês natural correspondente e coloque-o na linha de cima, com o português na linha de baixo.
-2. Se o texto abaixo estiver em inglês, mantenha o inglês fiel do áudio na linha de cima e traduza de forma natural (como se fala no dia a dia) na linha de baixo.
-3. NÃO coloque prefixos como "EN:", "PT:", "Inglês:", "Locutor 1:" ou numeração. Apenas as duas linhas limpas por bloco.
-4. Cubra o conteúdo inteiro do texto sem pular partes.
+1. Se o texto abaixo já estiver em português (sem o inglês original), reconstrua as frases equivalentes em inglês natural e aplique exatamente esse formato.
+2. NÃO coloque prefixos como "EN:", "PT:", "Locutor 1:", asteriscos ou numeração.
+3. Cubra o conteúdo inteiro do texto sem pular frases.
 
 TEXTO BASE:
 \"\"\"
