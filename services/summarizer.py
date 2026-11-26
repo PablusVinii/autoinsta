@@ -539,3 +539,56 @@ TEXTO BASE:
 \"\"\"
 """
     return generate_text_smart(prompt, max_tokens=3072) or "Não foi possível gerar o texto bilíngue no momento."
+
+
+def get_english_practice_text(
+    transcription_text: str,
+    orig_transcription: str = "",
+    orig_lang: str = "",
+) -> str:
+    """Retorna o texto completo em inglês do vídeo para o usuário praticar tradução."""
+    lang_clean = (orig_lang or "").strip().lower()
+    if orig_transcription and len(orig_transcription.strip()) > 10 and not lang_clean.startswith("pt"):
+        return orig_transcription.strip()
+
+    source = (orig_transcription or transcription_text or "").strip()
+    if not source or len(source) < 10:
+        return ""
+
+    prompt = (
+        "Traduza ou reescreva o texto falado abaixo integralmente para Inglês natural (mantendo todas as frases, sem resumir e sem rótulos de locutor).\n\n"
+        f"Texto:\n{source[:6000]}"
+    )
+    return generate_text_smart(prompt, max_tokens=2500)
+
+
+def evaluate_user_translation(english_text: str, user_pt_text: str) -> str:
+    """Corrige a tradução digitada pelo usuário em português comparando com o original em inglês."""
+    prompt = f"""
+Você é um professor particular de inglês gentil, direto e preciso avaliando a tradução de um aluno brasileiro.
+
+[TEXTO ORIGINAL EM INGLÊS]
+\"\"\"
+{english_text[:6000]}
+\"\"\"
+
+[TRADUÇÃO DIGITADA PELO ALUNO EM PORTUGUÊS]
+\"\"\"
+{user_pt_text[:6000]}
+\"\"\"
+
+Avalie a tradução do aluno e responda em Português do Brasil neste formato limpo para Telegram (sem tabelas):
+
+📊 *Nota de Precisão:* [X]/10
+
+✅ *O que você acertou bem:*
+• [Elogie 1 ou 2 trechos/expressões que o aluno traduziu com precisão]
+
+🔍 *Palavras e Expressões que Precisam de Ajuste:*
+• *[trecho/palavra em inglês]* → Você colocou: *"[como o aluno traduziu ou 'não traduziu']"* → Sentido correto: *"[tradução correta]"* — [explicação curta e clara]
+(Liste todas as palavras/expressões erradas, imprecisas ou puladas no trecho que o aluno tentou traduzir. Se o aluno traduziu tudo certo, diga que não houve erros!)
+
+🎯 *Tradução de Referência Natural:*
+[Tradução completa e natural em Português do Brasil para o aluno comparar]
+"""
+    return generate_text_smart(prompt, max_tokens=2500) or "Não foi possível corrigir a tradução no momento."

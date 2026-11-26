@@ -37,6 +37,8 @@ from services.summarizer import (
     answer_video_question,
     generate_engaging_comments,
     generate_bilingual_study,
+    get_english_practice_text,
+    evaluate_user_translation,
 )
 from services.notion import save_to_notion
 from services.obsidian import (
@@ -479,6 +481,43 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 2. VERIFICAÇÃO DE LINK DE VÍDEO NOVO:
     extracted = extract_video_url(user_text)
+    if extracted:
+        context.user_data.pop("awaiting_translation", None)
+
+    # 1.5 VERIFICAÇÃO DE MODO PRÁTICA DE TRADUÇÃO (INGLÊS -> PORTUGUÊS):
+    practice_data = context.user_data.get("awaiting_translation")
+    if practice_data and not extracted:
+        context.user_data.pop("awaiting_translation", None)
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id,
+            action=constants.ChatAction.TYPING,
+        )
+        loading = await update.message.reply_text("✍️ *Corrigindo sua tradução palavra por palavra...*", parse_mode=constants.ParseMode.MARKDOWN)
+        try:
+            feedback = await asyncio.to_thread(
+                evaluate_user_translation,
+                practice_data["english_text"],
+                user_text,
+            )
+            retry_kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔁 Praticar Novamente", callback_data=f"practice_{practice_data['cache_id']}")]
+            ])
+            if len(feedback) <= 3900:
+                try:
+                    await loading.edit_text(feedback, parse_mode=constants.ParseMode.MARKDOWN, reply_markup=retry_kb)
+                except Exception:
+                    await loading.edit_text(feedback, reply_markup=retry_kb)
+            else:
+                chunks = [feedback[i:i + 3800] for i in range(0, len(feedback), 3800)]
+                await loading.edit_text(chunks[0])
+                for ch in chunks[1:-1]:
+                    await update.message.reply_text(ch)
+                await update.message.reply_text(chunks[-1], reply_markup=retry_kb)
+        except Exception as e:
+            logger.error(f"Erro ao corrigir tradução: {e}", exc_info=True)
+            await loading.edit_text(f"❌ Erro ao corrigir tradução: {e}")
+        return
+
     if not extracted:
         await update.message.reply_text(
             "💡 Envie um link válido de vídeo (*Instagram, TikTok, YouTube, X*)\n"
@@ -626,14 +665,15 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 [
                     InlineKeyboardButton("📝 Transcrição", callback_data=f"tx_{cache_id}"),
                     InlineKeyboardButton("🇺🇸 Estudar Inglês", callback_data=f"study_{cache_id}"),
-                    InlineKeyboardButton("🎙️ Dublagem pt-BR", callback_data=f"dub_{cache_id}"),
+                    InlineKeyboardButton("✍️ Praticar Tradução", callback_data=f"practice_{cache_id}"),
                 ],
                 [
+                    InlineKeyboardButton("🎙️ Dublagem pt-BR", callback_data=f"dub_{cache_id}"),
                     InlineKeyboardButton("🎧 Resumo Áudio", callback_data=f"audio_{cache_id}"),
                     InlineKeyboardButton("💡 Ideias de Post", callback_data=f"idea_{cache_id}"),
-                    InlineKeyboardButton("💭 Gerar Comentário", callback_data=f"comment_{cache_id}"),
                 ],
                 [
+                    InlineKeyboardButton("💭 Gerar Comentário", callback_data=f"comment_{cache_id}"),
                     InlineKeyboardButton("⚖️ Auditoria Crítica", callback_data=f"critique_{cache_id}"),
                     InlineKeyboardButton("💬 Tirar Dúvida", callback_data=f"qa_{cache_id}"),
                 ],
@@ -1328,6 +1368,56 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception as e:
             logger.error(f"Erro no modo Estudar Inglês: {e}", exc_info=True)
             await loading_msg.edit_text(f"❌ Erro ao gerar estudo bilíngue: {e}")
+
+    # N) PRATICAR TRADUÇÃO (ENVIA TEXTO EM INGLÊS E CORRIGE A TRADUÇÃO DO USUÁRIO)
+    elif data.startswith("practice_"):
+        cache_id = data[len("practice_"):]
+        cached = get_cached_video(cache_id)
+        if not cached:
+            await query.message.reply_text("⚠️ As informações desse vídeo expiraram do cache.")
+            return
+
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id,
+            action=constants.ChatAction.TYPING,
+        )
+
+        loading_msg = await query.message.reply_text(
+            "✍️ *Preparando texto completo em inglês para você praticar...*",
+            parse_mode=constants.ParseMode.MARKDOWN,
+        )
+
+        try:
+            en_text = await asyncio.to_thread(
+                get_english_practice_text,
+                cached.get("transcription", ""),
+                cached.get("orig_transcription", ""),
+                cached.get("orig_lang", ""),
+            )
+            if not en_text:
+                await loading_msg.edit_text("❌ Transcrição não disponível para praticar.")
+                return
+
+            context.user_data["awaiting_translation"] = {
+                "cache_id": cache_id,
+                "english_text": en_text,
+            }
+
+            msg_text = (
+                f"✍️ *MODO PRÁTICA DE TRADUÇÃO*\n\n"
+                f"Leia o texto completo em inglês abaixo e *envie agora a sua tradução em português* aqui no chat (pode traduzir tudo ou um trecho):\n\n"
+                f"────────────────────────\n"
+                f"{en_text[:3200]}\n"
+                f"────────────────────────\n"
+                f"⏳ _Aguardando sua tradução para corrigir as palavras..._"
+            )
+            try:
+                await loading_msg.edit_text(msg_text, parse_mode=constants.ParseMode.MARKDOWN)
+            except Exception:
+                await loading_msg.edit_text(msg_text)
+        except Exception as e:
+            logger.error(f"Erro no modo Praticar Tradução: {e}", exc_info=True)
+            await loading_msg.edit_text(f"❌ Erro ao iniciar prática de tradução: {e}")
 
 async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Processa mensagens de voz ou áudio gravadas diretamente no Telegram com Deepgram Nova-3."""
