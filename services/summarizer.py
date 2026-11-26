@@ -592,3 +592,32 @@ Avalie a tradução do aluno e responda em Português do Brasil neste formato li
 [Tradução completa e natural em Português do Brasil para o aluno comparar]
 """
     return generate_text_smart(prompt, max_tokens=2500) or "Não foi possível corrigir a tradução no momento."
+
+
+def explain_english_word(word_or_phrase: str, video_context: str = "") -> str:
+    """
+    Explica uma palavra ou expressão em inglês no contexto do vídeo estudado,
+    com pronúncia aproximada, tradução, uso prático e exemplos.
+    """
+    ctx_block = f"\n[CONTEXTO DO VÍDEO QUE O ALUNO ESTÁ ESTUDANDO]:\n{video_context[:3000]}\n" if video_context else ""
+
+    prompt = f"""
+Você é um professor de inglês prático para brasileiros. O aluno está estudando um vídeo em inglês e digitou a palavra ou expressão abaixo para entender o significado dela.
+
+PALAVRA / EXPRESSÃO DIGITADA: "{word_or_phrase}"
+{ctx_block}
+
+Responda em Português do Brasil neste formato limpo para Telegram:
+
+🔤 *Palavra / Expressão:* `{word_or_phrase}`
+🗣️ *Pronúncia aproximada:* /[como soa para um brasileiro ler]/
+🇧🇷 *Tradução no contexto:* [tradução exata nesse vídeo] *(outros sentidos comuns, se houver)*
+
+💡 *Explicação rápida:*
+[Explique de forma simples o significado, se é gíria, phrasal verb ou expressão idiomática, e como os nativos usam no dia a dia]
+
+📌 *Exemplos práticos:*
+• "[Exemplo 1 em inglês]" → _[Tradução em PT-BR]_
+• "[Exemplo 2 em inglês]" → _[Tradução em PT-BR]_
+"""
+    return generate_text_smart(prompt, max_tokens=1024) or "Não foi possível explicar essa palavra no momento."

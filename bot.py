@@ -39,6 +39,7 @@ from services.summarizer import (
     generate_bilingual_study,
     get_english_practice_text,
     evaluate_user_translation,
+    explain_english_word,
 )
 from services.notion import save_to_notion
 from services.obsidian import (
@@ -483,6 +484,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     extracted = extract_video_url(user_text)
     if extracted:
         context.user_data.pop("awaiting_translation", None)
+        context.user_data.pop("studying_video", None)
 
     # 1.5 VERIFICAÇÃO DE MODO PRÁTICA DE TRADUÇÃO (INGLÊS -> PORTUGUÊS):
     practice_data = context.user_data.get("awaiting_translation")
@@ -516,6 +518,43 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Erro ao corrigir tradução: {e}", exc_info=True)
             await loading.edit_text(f"❌ Erro ao corrigir tradução: {e}")
+        return
+
+    # 1.6 VERIFICAÇÃO DE MODO DICIONÁRIO CONTEXTUAL ("ESTUDAR INGLÊS"):
+    studying_cache_id = context.user_data.get("studying_video")
+    if studying_cache_id and not extracted:
+        cached = get_cached_video(studying_cache_id)
+        video_ctx = ""
+        if cached:
+            video_ctx = cached.get("orig_transcription") or cached.get("transcription") or cached.get("summary", "")
+
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id,
+            action=constants.ChatAction.TYPING,
+        )
+        loading = await update.message.reply_text(
+            f"📖 *Buscando tradução e explicação para* `{user_text[:40]}`...",
+            parse_mode=constants.ParseMode.MARKDOWN,
+        )
+        try:
+            explanation = await asyncio.to_thread(explain_english_word, user_text, video_ctx)
+            wid = str(uuid.uuid4())[:8]
+            study_words = context.user_data.setdefault("study_words", {})
+            study_words[wid] = user_text[:200]
+
+            study_kb = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("🔊 Ouvir Pronúncia", callback_data=f"pron_{wid}"),
+                    InlineKeyboardButton("❌ Encerrar Estudo", callback_data="study_exit"),
+                ]
+            ])
+            try:
+                await loading.edit_text(explanation, parse_mode=constants.ParseMode.MARKDOWN, reply_markup=study_kb)
+            except Exception:
+                await loading.edit_text(explanation, reply_markup=study_kb)
+        except Exception as e:
+            logger.error(f"Erro no dicionário contextual: {e}", exc_info=True)
+            await loading.edit_text(f"❌ Erro ao explicar palavra: {e}")
         return
 
     if not extracted:
@@ -1345,11 +1384,19 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 cached.get("orig_transcription", ""),
                 cached.get("orig_lang", ""),
             )
+            context.user_data["studying_video"] = cache_id
+            context.user_data.pop("awaiting_translation", None)
+
             header = f"🇺🇸 *Estudo Bilíngue — {cached.get('title', 'Vídeo')[:50]}*\n\n"
-            full_text = header + bilingual
+            footer = "\n\n💡 Modo Dicionário ativo: digite qualquer palavra ou expressão em inglês aqui no chat para ver tradução, explicação e ouvir a pronúncia!"
+            full_text = header + bilingual + footer
+
+            study_exit_kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ Encerrar Modo Estudo", callback_data="study_exit")]
+            ])
 
             if len(full_text) <= 3800:
-                await loading_msg.edit_text(full_text)
+                await loading_msg.edit_text(full_text, reply_markup=study_exit_kb)
             else:
                 chunks = []
                 curr = ""
@@ -1363,8 +1410,9 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 if curr:
                     chunks.append(curr.strip())
                 await loading_msg.edit_text(chunks[0])
-                for c in chunks[1:]:
+                for c in chunks[1:-1]:
                     await query.message.reply_text(c)
+                await query.message.reply_text(chunks[-1], reply_markup=study_exit_kb)
         except Exception as e:
             logger.error(f"Erro no modo Estudar Inglês: {e}", exc_info=True)
             await loading_msg.edit_text(f"❌ Erro ao gerar estudo bilíngue: {e}")
@@ -1398,6 +1446,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 await loading_msg.edit_text("❌ Transcrição não disponível para praticar.")
                 return
 
+            context.user_data.pop("studying_video", None)
             context.user_data["awaiting_translation"] = {
                 "cache_id": cache_id,
                 "english_text": en_text,
@@ -1418,6 +1467,50 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception as e:
             logger.error(f"Erro no modo Praticar Tradução: {e}", exc_info=True)
             await loading_msg.edit_text(f"❌ Erro ao iniciar prática de tradução: {e}")
+
+    # O) OUVIR PRONÚNCIA NATIVA DA PALAVRA / EXPRESSÃO (DEEPGRAM AURA-2)
+    elif data.startswith("pron_"):
+        wid = data[len("pron_"):]
+        phrase = context.user_data.get("study_words", {}).get(wid, "")
+        if not phrase:
+            await query.message.reply_text("⚠️ Palavra expirada. Digite a palavra novamente.")
+            return
+
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id,
+            action=constants.ChatAction.RECORD_VOICE,
+        )
+        try:
+            from services.transcriber import synthesize_turn_deepgram_aura
+            import io
+            audio_bytes = await asyncio.to_thread(synthesize_turn_deepgram_aura, phrase, "aura-2-orion-en")
+            if not audio_bytes:
+                import edge_tts, tempfile
+                tmp_name = os.path.join(tempfile.gettempdir(), f"pron_{wid}.mp3")
+                comm = edge_tts.Communicate(phrase, voice="en-US-AndrewNeural")
+                await comm.save(tmp_name)
+                with open(tmp_name, "rb") as f:
+                    audio_bytes = f.read()
+                try:
+                    os.remove(tmp_name)
+                except Exception:
+                    pass
+
+            bio = io.BytesIO(audio_bytes)
+            bio.name = "pronunciation.mp3"
+            await context.bot.send_voice(
+                chat_id=update.effective_chat.id,
+                voice=bio,
+                caption=f"🔊 *Pronúncia nativa:* `{phrase}`",
+                parse_mode=constants.ParseMode.MARKDOWN,
+            )
+        except Exception as e:
+            logger.error(f"Erro ao gerar pronúncia: {e}")
+            await query.message.reply_text(f"❌ Não foi possível gerar o áudio da pronúncia: {e}")
+
+    elif data == "study_exit":
+        context.user_data.pop("studying_video", None)
+        await query.message.reply_text("✅ Modo Estudo de Inglês encerrado. Pode enviar um novo link quando quiser!")
 
 async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Processa mensagens de voz ou áudio gravadas diretamente no Telegram com Deepgram Nova-3."""
