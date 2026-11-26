@@ -291,7 +291,7 @@ def analyze_youtube_url_direct(youtube_url: str, lens: str = "gen", model_name: 
 
     return (summary, transcription, orig_lang) if return_lang else (summary, transcription)
 
-def analyze_and_summarize_video(file_path: str, lens: str = "gen", model_name: str = None, return_lang: bool = False):
+def analyze_and_summarize_video(file_path: str, lens: str = "gen", model_name: str = None, return_lang: bool = False, return_raw: bool = False):
     """
     Transcreve com Deepgram Nova-3 (com Diarização de locutores e isolamento de música)
     e analisa no Gemini — com fallback automático para NVIDIA NIM caso o Gemini atinja o limite.
@@ -299,9 +299,9 @@ def analyze_and_summarize_video(file_path: str, lens: str = "gen", model_name: s
     from services.transcriber import transcribe_with_deepgram
 
     # 1. Transcrição ultrarrápida com Deepgram Nova-3 e Diarização de locutores
-    dg_plain, dg_diarized, dg_lang = "", "", ""
+    dg_plain, dg_diarized, dg_lang, dg_raw = "", "", "", ""
     try:
-        dg_plain, dg_diarized, dg_lang = transcribe_with_deepgram(file_path, return_lang=True)
+        dg_plain, dg_diarized, dg_lang, dg_raw = transcribe_with_deepgram(file_path, return_lang=True, return_raw=True)
     except Exception as e:
         logger.warning(f"[Transcriber] Aviso ao transcrever com Deepgram: {e}")
 
@@ -384,6 +384,8 @@ def analyze_and_summarize_video(file_path: str, lens: str = "gen", model_name: s
         else:
             transcription = "Transcrição não disponível separadamente."
 
+    if return_raw:
+        return summary, transcription, dg_lang, dg_raw
     return (summary, transcription, dg_lang) if return_lang else (summary, transcription)
 
 def generate_content_ideas(summary_text: str) -> str:
@@ -495,3 +497,45 @@ REGRAS CRÍTICAS PARA OS COMENTÁRIOS:
 {lang_instruction}
 """
     return generate_text_smart(prompt) or "Não foi possível gerar os comentários no momento."
+
+
+def generate_bilingual_study(
+    transcription_text: str,
+    orig_transcription: str = "",
+    orig_lang: str = "",
+) -> str:
+    """
+    Gera um roteiro bilíngue frase por frase para estudo de inglês:
+    Linha 1: Frase original em inglês
+    Linha 2: Tradução natural em português logo abaixo
+    """
+    source_text = (orig_transcription or transcription_text or "").strip()
+    if not source_text or len(source_text) < 10:
+        return "⚠️ Transcrição não disponível para gerar o estudo bilíngue."
+
+    prompt = f"""
+Você é um professor particular de inglês prático para brasileiros.
+Abaixo está a transcrição de um vídeo ({orig_lang or 'inglês/português'}).
+
+TAREFA:
+Divida TODA a fala em frases ou blocos curtos de legenda (no máximo 1 frase por bloco) e entregue EXATAMENTE no formato bilíngue abaixo — **Inglês na linha de cima** e **Português do Brasil natural na linha de baixo**, separados por uma linha em branco entre cada bloco.
+
+EXEMPLO EXATO DO FORMATO:
+There is an idea in psychology
+Tem uma ideia na psicologia
+
+And it explains why most people hesitate
+E isso explica por que a maioria das pessoas hesita
+
+REGRAS OBRIGATÓRIAS:
+1. Se o texto abaixo já estiver traduzido para português (sem o inglês original), reconstrua o inglês natural correspondente e coloque-o na linha de cima, com o português na linha de baixo.
+2. Se o texto abaixo estiver em inglês, mantenha o inglês fiel do áudio na linha de cima e traduza de forma natural (como se fala no dia a dia) na linha de baixo.
+3. NÃO coloque prefixos como "EN:", "PT:", "Inglês:", "Locutor 1:" ou numeração. Apenas as duas linhas limpas por bloco.
+4. Cubra o conteúdo inteiro do texto sem pular partes.
+
+TEXTO BASE:
+\"\"\"
+{source_text[:8000]}
+\"\"\"
+"""
+    return generate_text_smart(prompt, max_tokens=3072) or "Não foi possível gerar o texto bilíngue no momento."

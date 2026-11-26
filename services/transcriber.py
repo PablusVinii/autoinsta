@@ -113,19 +113,24 @@ def translate_to_portuguese(text: str) -> str:
         logger.error(f"[Transcriber Translator] Erro ao traduzir: {e}")
         return text
 
-def transcribe_with_deepgram(file_path: str, return_lang: bool = False):
+def transcribe_with_deepgram(file_path: str, return_lang: bool = False, return_raw: bool = False):
     """
     Transcreve um arquivo de áudio ou vídeo usando Deepgram Nova-3 com Diarização.
-    Retorna (plain_text, diarized_text) ou (plain_text, diarized_text, detected_lang) se return_lang=True.
+    Retorna (plain, diarized), (plain, diarized, lang) ou (plain, diarized, lang, raw_plain).
     """
+    def _empty():
+        if return_raw:
+            return "", "", "", ""
+        return ("", "", "") if return_lang else ("", "")
+
     if not os.path.exists(file_path):
         logger.error(f"[Deepgram] Arquivo não encontrado: {file_path}")
-        return ("", "", "") if return_lang else ("", "")
+        return _empty()
 
     keys = get_keys()
     if not keys:
         logger.warning("[Deepgram] Nenhuma chave do Deepgram configurada.")
-        return ("", "", "") if return_lang else ("", "")
+        return _empty()
 
     # Lê os bytes do arquivo de mídia
     try:
@@ -133,7 +138,7 @@ def transcribe_with_deepgram(file_path: str, return_lang: bool = False):
             audio_bytes = f.read()
     except Exception as e:
         logger.error(f"[Deepgram] Erro ao ler arquivo de mídia: {e}")
-        return ("", "", "") if return_lang else ("", "")
+        return _empty()
 
     ext = os.path.splitext(file_path)[1].lower()
     content_type_map = {
@@ -180,6 +185,7 @@ def transcribe_with_deepgram(file_path: str, return_lang: bool = False):
                 data = res.json()
                 detected_lang = data.get("results", {}).get("channels", [{}])[0].get("detected_language", "")
                 plain, diarized = format_diarized_transcript(data)
+                raw_plain = plain
 
                 # Se o áudio original estiver em inglês ou outro idioma, traduz para pt-BR preservando os locutores
                 if is_non_portuguese(diarized, detected_lang):
@@ -188,6 +194,8 @@ def transcribe_with_deepgram(file_path: str, return_lang: bool = False):
                     plain = translate_to_portuguese(plain)
 
                 logger.info(f"[Deepgram Nova-3] Transcrição concluída com sucesso ({len(plain)} caracteres, lang={detected_lang}).")
+                if return_raw:
+                    return plain, diarized, detected_lang, raw_plain
                 return (plain, diarized, detected_lang) if return_lang else (plain, diarized)
 
             # Caso ocorra erro de quota ou autorização, rotaciona a chave
@@ -203,7 +211,7 @@ def transcribe_with_deepgram(file_path: str, return_lang: bool = False):
             logger.error(f"[Deepgram] Erro na requisição: {e}")
             rotate_key()
 
-    return ("", "", "") if return_lang else ("", "")
+    return _empty()
 
 DEEPGRAM_AURA_VOICES = {
     1: "aura-2-orion-en",   # Masculino conversacional, dinâmico e enérgico (Aura-2)

@@ -36,6 +36,7 @@ from services.summarizer import (
     generate_content_ideas,
     answer_video_question,
     generate_engaging_comments,
+    generate_bilingual_study,
 )
 from services.notion import save_to_notion
 from services.obsidian import (
@@ -567,6 +568,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             summary = None
             transcription = None
             orig_lang = ""
+            orig_transcription = ""
 
             # Para YouTube, usa integração nativa do Gemini com a lente
             if platform == "YouTube":
@@ -580,8 +582,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             # Para Instagram, TikTok e Twitter/X, baixa o arquivo de mídia
             if not summary:
                 local_path = await asyncio.to_thread(download_video, video_url)
-                summary, transcription, orig_lang = await asyncio.to_thread(
-                    analyze_and_summarize_video, local_path, lens_code, None, True
+                summary, transcription, orig_lang, orig_transcription = await asyncio.to_thread(
+                    analyze_and_summarize_video, local_path, lens_code, None, True, True
                 )
 
             category = f"{lens_name}"
@@ -611,6 +613,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             set_cached_video(cache_id, {
                 "summary": summary,
                 "transcription": transcription,
+                "orig_transcription": orig_transcription,
                 "url": video_url,
                 "platform": platform,
                 "category": category,
@@ -622,16 +625,19 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             keyboard = [
                 [
                     InlineKeyboardButton("📝 Transcrição", callback_data=f"tx_{cache_id}"),
+                    InlineKeyboardButton("🇺🇸 Estudar Inglês", callback_data=f"study_{cache_id}"),
                     InlineKeyboardButton("🎙️ Dublagem pt-BR", callback_data=f"dub_{cache_id}"),
-                    InlineKeyboardButton("🎧 Resumo Áudio", callback_data=f"audio_{cache_id}"),
                 ],
                 [
+                    InlineKeyboardButton("🎧 Resumo Áudio", callback_data=f"audio_{cache_id}"),
                     InlineKeyboardButton("💡 Ideias de Post", callback_data=f"idea_{cache_id}"),
                     InlineKeyboardButton("💭 Gerar Comentário", callback_data=f"comment_{cache_id}"),
-                    InlineKeyboardButton("⚖️ Auditoria Crítica", callback_data=f"critique_{cache_id}"),
                 ],
                 [
+                    InlineKeyboardButton("⚖️ Auditoria Crítica", callback_data=f"critique_{cache_id}"),
                     InlineKeyboardButton("💬 Tirar Dúvida", callback_data=f"qa_{cache_id}"),
+                ],
+                [
                     InlineKeyboardButton("💾 Notion", callback_data=f"notion_{cache_id}"),
                     InlineKeyboardButton("📓 Obsidian", callback_data=f"obsidian_{cache_id}"),
                 ],
@@ -1273,6 +1279,55 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception as e:
             logger.error(f"Erro ao gerar comentários: {e}", exc_info=True)
             await loading_msg.edit_text(f"❌ Erro ao gerar comentários: {e}")
+
+    # M) ESTUDAR INGLÊS (LINHA A LINHA: INGLÊS EM CIMA + PORTUGUÊS EMBAIXO)
+    elif data.startswith("study_"):
+        cache_id = data[len("study_"):]
+        cached = get_cached_video(cache_id)
+        if not cached:
+            await query.message.reply_text("⚠️ As informações desse vídeo expiraram do cache.")
+            return
+
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id,
+            action=constants.ChatAction.TYPING,
+        )
+
+        loading_msg = await query.message.reply_text(
+            "🇺🇸 *Montando transcrição bilíngue (Inglês + Português) linha a linha...*",
+            parse_mode=constants.ParseMode.MARKDOWN,
+        )
+
+        try:
+            bilingual = await asyncio.to_thread(
+                generate_bilingual_study,
+                cached.get("transcription", ""),
+                cached.get("orig_transcription", ""),
+                cached.get("orig_lang", ""),
+            )
+            header = f"🇺🇸 *Estudo Bilíngue — {cached.get('title', 'Vídeo')[:50]}*\n\n"
+            full_text = header + bilingual
+
+            if len(full_text) <= 3800:
+                await loading_msg.edit_text(full_text)
+            else:
+                chunks = []
+                curr = ""
+                for block in full_text.split("\n\n"):
+                    if len(curr) + len(block) + 2 < 3800:
+                        curr += block + "\n\n"
+                    else:
+                        if curr:
+                            chunks.append(curr.strip())
+                        curr = block + "\n\n"
+                if curr:
+                    chunks.append(curr.strip())
+                await loading_msg.edit_text(chunks[0])
+                for c in chunks[1:]:
+                    await query.message.reply_text(c)
+        except Exception as e:
+            logger.error(f"Erro no modo Estudar Inglês: {e}", exc_info=True)
+            await loading_msg.edit_text(f"❌ Erro ao gerar estudo bilíngue: {e}")
 
 async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Processa mensagens de voz ou áudio gravadas diretamente no Telegram com Deepgram Nova-3."""
