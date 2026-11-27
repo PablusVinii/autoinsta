@@ -75,6 +75,7 @@ from services.blog import (
     next_blog_angle,
 )
 from services.visuals import generate_disruptive_cover
+from services.articles import extract_article_url, analyze_web_article
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -480,9 +481,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await loading.edit_text(f"❌ Não consegui responder no momento: {e}")
             return
 
-    # 2. VERIFICAÇÃO DE LINK DE VÍDEO NOVO:
+    # 2. VERIFICAÇÃO DE LINK DE VÍDEO OU ARTIGO WEB NOVO:
     extracted = extract_video_url(user_text)
-    if extracted:
+    article_url = None if extracted else extract_article_url(user_text)
+    if extracted or article_url:
         context.user_data.pop("awaiting_translation", None)
         context.user_data.pop("studying_video", None)
 
@@ -558,9 +560,85 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not extracted:
+        if article_url:
+            await context.bot.send_chat_action(
+                chat_id=update.effective_chat.id,
+                action=constants.ChatAction.TYPING,
+            )
+            status_msg = await update.message.reply_text(
+                "📰 *Lendo artigo da web e criando ângulos editoriais...*",
+                parse_mode=constants.ParseMode.MARKDOWN,
+            )
+            try:
+                title_line, summary, raw_article, category = await asyncio.to_thread(analyze_web_article, article_url)
+                user_id = update.effective_user.id
+
+                save_video(
+                    user_id=user_id,
+                    title=title_line,
+                    category=category,
+                    platform="Artigo Web",
+                    url=article_url,
+                    summary=summary,
+                    transcription=raw_article[:15000],
+                )
+
+                cache_id = str(uuid.uuid4())[:8]
+                set_cached_video(cache_id, {
+                    "summary": summary,
+                    "transcription": raw_article[:15000],
+                    "orig_transcription": raw_article[:15000],
+                    "url": article_url,
+                    "platform": "Artigo Web",
+                    "category": category,
+                    "title": title_line,
+                    "orig_lang": "",
+                    "time": time.time(),
+                })
+
+                keyboard = [
+                    [
+                        InlineKeyboardButton("💼 Post LinkedIn", callback_data=f"li_prep_{cache_id}"),
+                        InlineKeyboardButton("🌐 Post Blog", callback_data=f"blog_prep_{cache_id}"),
+                    ],
+                    [
+                        InlineKeyboardButton("💡 Ideias de Post", callback_data=f"idea_{cache_id}"),
+                        InlineKeyboardButton("⚖️ Auditoria Crítica", callback_data=f"critique_{cache_id}"),
+                    ],
+                    [
+                        InlineKeyboardButton("🎧 Resumo Áudio", callback_data=f"audio_{cache_id}"),
+                        InlineKeyboardButton("💬 Tirar Dúvida", callback_data=f"qa_{cache_id}"),
+                    ],
+                    [
+                        InlineKeyboardButton("💾 Notion", callback_data=f"notion_{cache_id}"),
+                        InlineKeyboardButton("📓 Obsidian", callback_data=f"obsidian_{cache_id}"),
+                    ],
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                resp = f"📰 *{title_line}*\n🏷️ `#{category}`\n\n{summary}\n\n🔗 [Artigo Original]({article_url})"
+                try:
+                    sent_msg = await status_msg.edit_text(
+                        resp,
+                        parse_mode=constants.ParseMode.MARKDOWN,
+                        disable_web_page_preview=True,
+                        reply_markup=reply_markup,
+                    )
+                except Exception:
+                    sent_msg = await status_msg.edit_text(
+                        resp,
+                        disable_web_page_preview=True,
+                        reply_markup=reply_markup,
+                    )
+                if sent_msg:
+                    MESSAGE_CACHE_MAP[sent_msg.message_id] = cache_id
+            except Exception as e:
+                logger.error(f"Erro ao analisar artigo web: {e}", exc_info=True)
+                await status_msg.edit_text(f"❌ Não consegui ler este artigo:\n{e}")
+            return
+
         await update.message.reply_text(
-            "💡 Envie um link válido de vídeo (*Instagram, TikTok, YouTube, X*)\n"
-            "Ou responda (dê 'Reply') a um resumo anterior para fazer perguntas sobre ele!",
+            "💡 Envie um link válido de vídeo (*Instagram, TikTok, YouTube, X*) ou de qualquer *artigo da internet*!\n"
+            "Ou responda (dê 'Reply') a um resumo anterior para fazer perguntas sobre ele.",
             parse_mode=constants.ParseMode.MARKDOWN,
         )
         return
